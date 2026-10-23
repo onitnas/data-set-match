@@ -26,7 +26,9 @@ L'addestramento viene eseguito **offline** su dati storici. Durante l'esecuzione
 
 ## Dataset e feature
 
-Il dataset di training è costruito a livello di **singolo punto**: ogni riga descrive la situazione nota *prima* del punto da prevedere.
+Il dataset di training è costruito a livello di **singolo punto**, usando i
+tabelloni principali 2024 dei tornei del Grand Slam e Masters 1000: ogni riga
+descrive la situazione nota *prima* del punto da prevedere.
 
 Esempi di informazioni considerate:
 
@@ -64,21 +66,23 @@ Esempi di informazioni considerate:
 
 ## Organizzazione del repository
 
-La struttura verrà popolata progressivamente durante lo sviluppo:
+La prima componente implementata è la preparazione del dataset. Il training e
+la pipeline streaming verranno aggiunti in branch successivi:
 
 ```text
 .
-├── data/                 # Dataset locali
-├── training/             # Preparazione dati e training offline
+├── training/             # Preparazione del dataset storico
 ├── ingestion/            # Acquisizione e pubblicazione degli eventi
 ├── streaming/            # Elaborazione e inferenza in tempo reale
 ├── config/               # Configurazioni dei servizi
 ├── notebooks/            # Analisi ed esperimenti
-├── docker-compose.yml    # Ambiente containerizzato 
+├── docker-compose.yml    # Previsto per le fasi Spark/streaming
 └── README.md
 ```
 
-I dettagli di configurazione, avvio e riproducibilità degli esperimenti saranno documentati man mano che le componenti saranno implementate.
+Le istruzioni della fase corrente sono in
+[`training/README.md`](training/README.md). I dati sorgente e i Parquet generati
+restano locali e non sono inclusi nel repository.
 
 ## Origine e utilizzo dei dati
 

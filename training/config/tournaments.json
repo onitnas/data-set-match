@@ -1,0 +1,93 @@
+[
+    {
+        "tournament_key": 1236,
+        "tournament_name": "Australian Open",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 2155,
+        "tournament_name": "French Open",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Clay"
+    },
+    {
+        "tournament_key": 2053,
+        "tournament_name": "Wimbledon",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Grass"
+    },
+    {
+        "tournament_key": 1217,
+        "tournament_name": "US Open",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1903,
+        "tournament_name": "ATP Indian Wells",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1928,
+        "tournament_name": "Miami",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1970,
+        "tournament_name": "Monte Carlo",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Clay"
+    },
+    {
+        "tournament_key": 2004,
+        "tournament_name": "Madrid",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Clay"
+    },
+    {
+        "tournament_key": 2011,
+        "tournament_name": "Rome",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Clay"
+    },
+    {
+        "tournament_key": 2078,
+        "tournament_name": "Montreal",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1210,
+        "tournament_name": "Cincinnati",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1667,
+        "tournament_name": "Shanghai",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard"
+    },
+    {
+        "tournament_key": 1725,
+        "tournament_name": "Paris",
+        "event_type_key": 265,
+        "event_type_type": "Atp Singles",
+        "tournament_surface": "Hard (Indoor)"
+    }
+]
