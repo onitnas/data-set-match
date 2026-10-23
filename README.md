@@ -30,17 +30,15 @@ Il dataset di training è costruito a livello di **singolo punto**, usando i
 tabelloni principali 2024 dei tornei del Grand Slam e Masters 1000: ogni riga
 descrive la situazione nota *prima* del punto da prevedere.
 
-Esempi di informazioni considerate:
+La prima versione usa 11 feature di punteggio, 6 metadati e un target:
 
 | Categoria | Esempi |
 | --- | --- |
-| Incontro | `match_id`, `player1_id`, `player2_id` |
-| Servizio | `server_id`, `receiver_id` |
-| Stato del match | `set_number`, `game_number`, `score` |
-| Contesto del punto | `is_break_point`, `is_game_point`, `is_set_point` |
-| Statistiche storiche | rendimento al servizio e in risposta, calcolato sui dati precedenti all'incontro |
-| Statistiche live | statistiche aggregate sui soli punti già disputati |
-| Target | vincitore del punto successivo |
+| Metadati | Incontro, data, battitore, ribattitore, numero del punto e indicatore di ricostruzione |
+| Feature | Formato del match, set e game vinti, punteggio ordinario e tie-break |
+| Target | `label`: 1 se vince il battitore, 0 se vince il ribattitore |
+
+Statistiche live e storico dei giocatori potranno essere aggiunti in seguito.
 
 **Prevenzione del data leakage:** le feature non devono contenere informazioni sul punto da prevedere o su eventi futuri. Anche la validazione del modello dovrà separare gli incontri di training e test, preferibilmente in ordine temporale.
 
