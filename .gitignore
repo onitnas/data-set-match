@@ -7,9 +7,6 @@ __pycache__/
 # Source data is supplied locally and may have redistribution restrictions
 training/data/
 
-# Generated datasets are reproducible and are not versioned
-training/output/
-
 # Local tooling
 .idea/
 .vscode/
