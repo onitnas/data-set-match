@@ -1,4 +1,4 @@
-# Download e preparazione del dataset
+# Dataset e addestramento del modello
 
 Questa cartella contiene gli script per scaricare e preparare gli incontri ATP
 dei quattro Slam e dei nove Masters 1000.
@@ -77,7 +77,8 @@ Le righe sono raccolte in liste in memoria e scritte con `parquet.write_table`.
 
 ## Protocollo di addestramento e valutazione
 
-Il training del modello verrà implementato in un branch successivo con queste fasi:
+`train_model.py` implementa le prime due fasi del protocollo. La valutazione
+definitiva verrà eseguita con uno script separato:
 
 1. Addestramento su `train.parquet` (2024) e scelta degli iperparametri usando
    `validation.parquet` (2025).
@@ -95,6 +96,66 @@ Le metriche previste sono:
 | Log Loss | Qualità delle probabilità, penalizzando gli errori molto sicuri | Più bassa |
 | Brier Score | Errore quadratico medio tra probabilità del battitore ed esito 0/1 | Più basso |
 | ROC-AUC | Capacità di ordinare i punti vinti dal battitore sopra quelli persi | Più alta |
+
+## Training con Docker
+
+Con i Parquet e `schema.json` già presenti in `training/data/processed/`,
+eseguire dalla radice del progetto:
+
+```bash
+docker compose up --build spark-ml
+```
+
+L'immagine contiene Python 3.13, il runtime Java predefinito di Debian e PySpark ML 4.2.0. Spark gira in
+modalità locale nel container con due thread; i dataset sono montati in sola
+lettura. Non serve installare PySpark nell'ambiente Python dell'host.
+
+Lo script legge l'ordine delle feature da `schema.json`, usa `VectorAssembler`
+e `GBTClassifier` e prova otto configurazioni definite in `PARAMETER_GRID`:
+profondità 3/5, iterazioni 30/60 e passo 0.05/0.1. Ogni configurazione viene
+addestrata sul 2024 e valutata sul 2025 con le quattro metriche. Viene calcolato
+anche un riferimento a probabilità costante, stimata sul 2024 e valutata sul 2025.
+La configurazione con Log Loss minore viene riaddestrata da zero su 2024 + 2025.
+La classificazione usa soglia 0.5 e il seme casuale è 42. Il 2026 non viene letto.
+
+Il codice segue un flusso principale sequenziale, con commenti numerati e messaggi
+di avanzamento, sul modello dell'esempio del corso
+[`sentiment_analysis_model.py`](https://github.com/tapunict/tap2026/blob/main/spark/code/sentiment_analysis_model.py).
+L'assemblatore, il classificatore e la pipeline sono costruiti esplicitamente;
+`pipeline.fit()` addestra ogni candidato e `model.transform()` produce le
+previsioni sulla validation. La funzione `evaluate_predictions` raccoglie le
+quattro metriche ed evita di ripeterne il calcolo nel codice.
+
+L'output, persistente e ignorato da Git, è:
+
+```text
+training/artifacts/model/
+├── pipeline/             # VectorAssembler + GBTClassificationModel
+├── schema.json
+└── training_report.json  # Baseline, candidati, metriche 2025 e parametri scelti
+```
+
+Le metriche nel report sono quelle dei candidati addestrati sul 2024 e valutati
+sul 2025, prima del riaddestramento finale. Non sono metriche del modello finale
+sul 2026. La probabilità `probability[1]` indica la vittoria del battitore.
+
+La pipeline e i report vengono salvati in una directory temporanea e pubblicati
+nel percorso finale solo a salvataggio concluso. Se quel modello esiste già,
+lo script termina senza addestrare e senza avviare Spark. Un percorso finale
+incompleto produce un errore. Non viene usato un file `training.complete`.
+
+Per un nuovo addestramento usare una directory diversa, senza cancellare il
+modello precedente:
+
+```bash
+docker compose run --rm spark-ml python -m training.train_model --output-dir training/artifacts/run_2
+```
+
+Per controllare la configurazione Compose senza avviare il training:
+
+```bash
+docker compose config --quiet
+```
 
 ## Riepilogo della preparazione
 
@@ -153,4 +214,6 @@ tie-break sul 6-6 a 7 punti, oppure a 10 nel quinto set degli Slam.
 - `config/tournaments.json`: elenco dei tornei.
 - `tennis_rules.py`: funzioni per punteggi, servizio e ricostruzione dei punti.
 - `prepare_dataset.py`: lettura, creazione delle 18 colonne, split e salvataggio.
-- `requirements.txt`: dipendenze Python.
+- `train_model.py`: selezione degli iperparametri e riaddestramento finale.
+- `Dockerfile`: ambiente del training Spark.
+- `requirements.txt`: dipendenze Python per download e preparazione dei dati.

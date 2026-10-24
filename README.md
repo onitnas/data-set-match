@@ -84,8 +84,7 @@ la pipeline streaming verranno aggiunti in branch successivi:
 ```
 
 Le istruzioni della fase corrente sono in
-[`training/README.md`](training/README.md). I dati sorgente e i Parquet generati
-restano locali e non sono inclusi nel repository.
+[`training/README.md`](training/README.md).
 
 ## Origine e utilizzo dei dati
 
