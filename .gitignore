@@ -1,0 +1,13 @@
+# Local Python environment
+.venv/
+__pycache__/
+*.py[cod]
+.env
+
+# Source data is supplied locally and may have redistribution restrictions
+training/data/
+
+# Local tooling
+.idea/
+.vscode/
+.DS_Store

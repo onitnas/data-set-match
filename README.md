@@ -26,29 +26,34 @@ L'addestramento viene eseguito **offline** su dati storici. Durante l'esecuzione
 
 ## Dataset e feature
 
-Il dataset di training è costruito a livello di **singolo punto**: ogni riga descrive la situazione nota *prima* del punto da prevedere.
+Il dataset di training è costruito a livello di **singolo punto**, usando i
+tabelloni principali 2024-2026 dei tornei del Grand Slam e Masters 1000: ogni riga
+descrive la situazione nota *prima* del punto da prevedere.
 
-Esempi di informazioni considerate:
+La prima versione usa 11 feature di punteggio, 6 metadati e un target:
 
 | Categoria | Esempi |
 | --- | --- |
-| Incontro | `match_id`, `player1_id`, `player2_id` |
-| Servizio | `server_id`, `receiver_id` |
-| Stato del match | `set_number`, `game_number`, `score` |
-| Contesto del punto | `is_break_point`, `is_game_point`, `is_set_point` |
-| Statistiche storiche | rendimento al servizio e in risposta, calcolato sui dati precedenti all'incontro |
-| Statistiche live | statistiche aggregate sui soli punti già disputati |
-| Target | vincitore del punto successivo |
+| Metadati | Incontro, data, battitore, ribattitore, numero del punto e indicatore di ricostruzione |
+| Feature | Formato del match, set e game vinti, punteggio ordinario e tie-break |
+| Target | `label`: 1 se vince il battitore, 0 se vince il ribattitore |
 
-**Prevenzione del data leakage:** le feature non devono contenere informazioni sul punto da prevedere o su eventi futuri. Anche la validazione del modello dovrà separare gli incontri di training e test, preferibilmente in ordine temporale.
+Statistiche live e storico dei giocatori potranno essere aggiunti in seguito.
+
+**Prevenzione del data leakage:** le feature non devono contenere informazioni
+sul punto da prevedere o su eventi futuri. Le stagioni vengono separate:
+2024 per il training, 2025 per la validation e 2026 per il test.
 
 ## Machine Learning
 
 - **Problema:** classificazione binaria con stima della probabilità di vittoria del prossimo punto.
 - **Approccio previsto:** Gradient Boosting.
-- **Training:** offline, a partire da dati storici normalizzati.
+- **Training:** offline sul 2024, selezione degli iperparametri sul 2025,
+  poi riaddestramento su 2024 + 2025 con gli iperparametri fissati.
 - **Inferenza:** nella pipeline di streaming, utilizzando il modello precedentemente addestrato.
-- **Valutazione prevista:** log loss, Brier score e metriche di classificazione, con attenzione alla calibrazione delle probabilità.
+- **Valutazione prevista:** Accuracy, Log Loss, Brier Score e ROC-AUC sul 2026,
+  mai usato per addestrare o ottimizzare il modello. La copertura del 2026 è
+  limitata ai dati disponibili, attualmente senza l'ultimo Masters 1000 di novembre.
 
 ## Stack tecnologico
 
@@ -64,21 +69,23 @@ Esempi di informazioni considerate:
 
 ## Organizzazione del repository
 
-La struttura verrà popolata progressivamente durante lo sviluppo:
+La prima componente implementata è la preparazione del dataset. Il training e
+la pipeline streaming verranno aggiunti in branch successivi:
 
 ```text
 .
-├── data/                 # Dataset locali
-├── training/             # Preparazione dati e training offline
+├── training/             # Preparazione del dataset storico
 ├── ingestion/            # Acquisizione e pubblicazione degli eventi
 ├── streaming/            # Elaborazione e inferenza in tempo reale
 ├── config/               # Configurazioni dei servizi
 ├── notebooks/            # Analisi ed esperimenti
-├── docker-compose.yml    # Ambiente containerizzato 
+├── docker-compose.yml    # Previsto per le fasi Spark/streaming
 └── README.md
 ```
 
-I dettagli di configurazione, avvio e riproducibilità degli esperimenti saranno documentati man mano che le componenti saranno implementate.
+Le istruzioni della fase corrente sono in
+[`training/README.md`](training/README.md). I dati sorgente e i Parquet generati
+restano locali e non sono inclusi nel repository.
 
 ## Origine e utilizzo dei dati
 
