@@ -27,7 +27,7 @@ L'addestramento viene eseguito **offline** su dati storici. Durante l'esecuzione
 ## Dataset e feature
 
 Il dataset di training è costruito a livello di **singolo punto**, usando i
-tabelloni principali 2024 dei tornei del Grand Slam e Masters 1000: ogni riga
+tabelloni principali 2024-2026 dei tornei del Grand Slam e Masters 1000: ogni riga
 descrive la situazione nota *prima* del punto da prevedere.
 
 La prima versione usa 11 feature di punteggio, 6 metadati e un target:
@@ -40,15 +40,20 @@ La prima versione usa 11 feature di punteggio, 6 metadati e un target:
 
 Statistiche live e storico dei giocatori potranno essere aggiunti in seguito.
 
-**Prevenzione del data leakage:** le feature non devono contenere informazioni sul punto da prevedere o su eventi futuri. Anche la validazione del modello dovrà separare gli incontri di training e test, preferibilmente in ordine temporale.
+**Prevenzione del data leakage:** le feature non devono contenere informazioni
+sul punto da prevedere o su eventi futuri. Le stagioni vengono separate:
+2024 per il training, 2025 per la validation e 2026 per il test.
 
 ## Machine Learning
 
 - **Problema:** classificazione binaria con stima della probabilità di vittoria del prossimo punto.
 - **Approccio previsto:** Gradient Boosting.
-- **Training:** offline, a partire da dati storici normalizzati.
+- **Training:** offline sul 2024, selezione degli iperparametri sul 2025,
+  poi riaddestramento su 2024 + 2025 con gli iperparametri fissati.
 - **Inferenza:** nella pipeline di streaming, utilizzando il modello precedentemente addestrato.
-- **Valutazione prevista:** log loss, Brier score e metriche di classificazione, con attenzione alla calibrazione delle probabilità.
+- **Valutazione prevista:** Accuracy, Log Loss, Brier Score e ROC-AUC sul 2026,
+  mai usato per addestrare o ottimizzare il modello. La copertura del 2026 è
+  limitata ai dati disponibili, attualmente senza l'ultimo Masters 1000 di novembre.
 
 ## Stack tecnologico
 
