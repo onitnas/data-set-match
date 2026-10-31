@@ -5,5 +5,5 @@ services:
       dockerfile: training/Dockerfile
     working_dir: /app
     volumes:
-      - ./training/data/processed:/app/training/data/processed:ro
+      - ${TENNIS_DATASET_DIR:-./training/data/processed}:/app/training/data/processed:ro
       - ./training/artifacts:/app/training/artifacts

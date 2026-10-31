@@ -10,7 +10,8 @@ RUN apt-get update \
 
 ENV PYTHONUNBUFFERED=1
 
-COPY training/train_model.py ./training/train_model.py
+COPY training/*.py ./training/
+COPY training/config/ ./training/config/
 
 CMD ["python", "-m", "training.train_model"]
 
