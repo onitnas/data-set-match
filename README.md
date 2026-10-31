@@ -4,7 +4,7 @@ Sistema di analisi e previsione in tempo reale degli incontri di tennis, svilupp
 
 ## Obiettivo
 
-Il progetto integra **stream processing** e **machine learning** per analizzare in tempo reale gli eventi punto per punto di una partita di tennis. L'obiettivo è stimare e aggiornare continuamente la **probabilità di vittoria del match** per ciascun giocatore, sfruttando i dati storici, le statistiche di gioco e le **previsioni sull'esito del punto successivo**.
+Il progetto integra **stream processing** e **machine learning** per analizzare in tempo reale gli eventi punto per punto di una partita di tennis. L'obiettivo è stimare e aggiornare continuamente la **probabilità di vittoria del match** per ciascun giocatore, sfruttando i dati storici, le statistiche di gioco e l'**esito del punto successivo**.
 
 ## Architettura prevista
 
@@ -26,34 +26,29 @@ L'addestramento viene eseguito **offline** su dati storici. Durante l'esecuzione
 
 ## Dataset e feature
 
-Il dataset di training è costruito a livello di **singolo punto**, usando i
-tabelloni principali 2024-2026 dei tornei del Grand Slam e Masters 1000: ogni riga
-descrive la situazione nota *prima* del punto da prevedere.
+Il dataset di training è costruito a livello di **singolo punto**: ogni riga descrive la situazione nota *prima* del punto da prevedere.
 
-La prima versione usa 11 feature di punteggio, 6 metadati e un target:
+Esempi di informazioni considerate:
 
 | Categoria | Esempi |
 | --- | --- |
-| Metadati | Incontro, data, battitore, ribattitore, numero del punto e indicatore di ricostruzione |
-| Feature | Formato del match, set e game vinti, punteggio ordinario e tie-break |
-| Target | `label`: 1 se vince il battitore, 0 se vince il ribattitore |
+| Incontro | `match_id`, `player1_id`, `player2_id` |
+| Servizio | `server_id`, `receiver_id` |
+| Stato del match | `set_number`, `game_number`, `score` |
+| Contesto del punto | `is_break_point`, `is_game_point`, `is_set_point` |
+| Statistiche storiche | rendimento al servizio e in risposta, calcolato sui dati precedenti all'incontro |
+| Statistiche live | statistiche aggregate sui soli punti già disputati |
+| Target | vincitore del punto successivo |
 
-Statistiche live e storico dei giocatori potranno essere aggiunti in seguito.
-
-**Prevenzione del data leakage:** le feature non devono contenere informazioni
-sul punto da prevedere o su eventi futuri. Le stagioni vengono separate:
-2024 per il training, 2025 per la validation e 2026 per il test.
+**Prevenzione del data leakage:** le feature non devono contenere informazioni sul punto da prevedere o su eventi futuri. Anche la validazione del modello dovrà separare gli incontri di training e test, preferibilmente in ordine temporale.
 
 ## Machine Learning
 
 - **Problema:** classificazione binaria con stima della probabilità di vittoria del prossimo punto.
 - **Approccio previsto:** Gradient Boosting.
-- **Training:** offline sul 2024, selezione degli iperparametri sul 2025,
-  poi riaddestramento su 2024 + 2025 con gli iperparametri fissati.
+- **Training:** offline, a partire da dati storici normalizzati.
 - **Inferenza:** nella pipeline di streaming, utilizzando il modello precedentemente addestrato.
-- **Valutazione prevista:** Accuracy, Log Loss, Brier Score e ROC-AUC sul 2026,
-  mai usato per addestrare o ottimizzare il modello. La copertura del 2026 è
-  limitata ai dati disponibili, attualmente senza l'ultimo Masters 1000 di novembre.
+- **Valutazione prevista:** log loss, Brier score e metriche di classificazione, con attenzione alla calibrazione delle probabilità.
 
 ## Stack tecnologico
 
@@ -69,23 +64,30 @@ sul punto da prevedere o su eventi futuri. Le stagioni vengono separate:
 
 ## Organizzazione del repository
 
-La prima componente implementata è la preparazione del dataset. Il training e
-la pipeline streaming verranno aggiunti in branch successivi:
+La struttura verrà popolata progressivamente durante lo sviluppo:
 
 ```text
 .
-├── training/             # Preparazione del dataset storico
-├── ingestion/            # Acquisizione e pubblicazione degli eventi
-├── streaming/            # Elaborazione e inferenza in tempo reale
-├── config/               # Configurazioni dei servizi
-├── notebooks/            # Analisi ed esperimenti
-├── docker-compose.yml    # Previsto per le fasi Spark/streaming
+├── training/                 # Script di raccolta, preparazione, training e valutazione
+│   ├── config/               # Tornei e superfici
+│   ├── data/                 # Dati locali, esclusi da Git
+│   │   ├── raw/              # JSON consolidati degli incontri
+│   │   │   ├── 2024/
+│   │   │   ├── 2025/
+│   │   │   └── 2026/
+│   │   ├── players/          # Profili e ranking dei giocatori
+│   │   └── processed/        # Parquet di train, validation e test
+│   ├── artifacts/            # Artefatti locali, esclusi da Git
+│   │   └── model/            # Pipeline addestrata, schema e report di training
+│   ├── Dockerfile            # Ambiente Spark ML
+│   ├── requirements.txt      # Dipendenze per raccolta e preparazione
+│   └── README.md             # Documentazione della fase ML
+├── docker-compose.yml        # Ambiente containerizzato
+├── LICENSE
 └── README.md
 ```
 
-Le istruzioni della fase corrente sono in
-[`training/README.md`](training/README.md). I dati sorgente e i Parquet generati
-restano locali e non sono inclusi nel repository.
+I dettagli di configurazione, avvio e riproducibilità degli esperimenti saranno documentati man mano che le componenti saranno implementate.
 
 ## Origine e utilizzo dei dati
 

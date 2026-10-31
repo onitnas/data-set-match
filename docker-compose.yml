@@ -1,0 +1,9 @@
+services:
+  spark-ml:
+    build:
+      context: .
+      dockerfile: training/Dockerfile
+    working_dir: /app
+    volumes:
+      - ${TENNIS_DATASET_DIR:-./training/data/processed}:/app/training/data/processed:ro
+      - ./training/artifacts:/app/training/artifacts

@@ -1,156 +1,159 @@
-# Download e preparazione del dataset
+# Probabilità live di vittoria del match
 
-Questa cartella contiene gli script per scaricare e preparare gli incontri ATP
-dei quattro Slam e dei nove Masters 1000.
+Il modello operativo è un `GBTClassifier` Spark ML con 23 feature.
+`label = 1` indica la vittoria finale di A, `0` quella di B.
+I giocatori A/B rimangono fissi durante l'incontro, anche quando cambia
+il battitore. Tutti gli stati dello stesso match hanno la stessa label.
 
-## Installazione
+## Raccolta e preparazione
 
-Eseguire i comandi dalla radice del progetto:
+Dalla radice del repository:
 
 ```bash
-python3 -m venv .venv
 .venv/bin/python -m pip install -r training/requirements.txt
 ```
 
-## Download
+`fetch_matches.py` legge i tornei configurati, chiede l'anno e salva i JSON
+tramite `get_fixtures`. Riscrive i file restituiti per quell'annata:
 
 ```bash
-read -rs -p 'API Tennis key: ' API_TENNIS_KEY
-export API_TENNIS_KEY
 .venv/bin/python -m training.fetch_matches
 ```
 
-Inserire l'anno quando richiesto. La chiave viene letta dall'ambiente; i file
-`.env` non sono caricati automaticamente. I tornei e le loro chiavi sono in
-`config/tournaments.json`: verificarle per la stagione scelta.
-
-Ogni torneo viene salvato in `training/data/raw/<anno>/<torneo>_<anno>.json`,
-con la lista degli incontri nel campo `tournament`. Vengono esclusi qualificazioni
-e incontri senza `pointbypoint`. Un torneo senza incontri viene saltato.
-Una nuova esecuzione sovrascrive i JSON dello stesso anno e torneo.
-
-## Preparazione
+`fetch_players.py` chiama `get_players` e salva un JSON per giocatore, saltando
+i profili già presenti:
 
 ```bash
-.venv/bin/python -m training.prepare_dataset
+.venv/bin/python -m training.fetch_players
 ```
 
-Il comando legge i JSON nelle cartelle `training/data/raw/2024/`,
-`training/data/raw/2025/` e `training/data/raw/2026/`.
-Tutte e tre le cartelle devono essere presenti.
-L'output viene creato in una nuova directory:
+`prepare_dataset.py` legge i raw, controlla duplicati e date, seleziona ATP
+Singles conclusi nei tabelloni principali dei tornei configurati e ricostruisce
+i punti con `tennis_rules.py`. Un incontro incoerente viene scartato interamente.
 
-```text
-training/data/processed/
-├── train.parquet
-├── validation.parquet
-├── test.parquet
-├── schema.json
-└── report.json
+Il percorso di output predefinito è `training/data/processed`.
+`--input-dir` e `--players-dir` permettono di cambiare gli input.
+
+| Split | Anno | Incontri | Stati |
+| --- | --- | --- | --- |
+| Training | 2024 | 981 | 178.643 |
+| Validation | 2025 | 980 | 177.251 |
+| Test | 2026 | 911 | 160.650 |
+
+Ogni riga è lo stato prima di un punto. Non viene incluso lo stato successivo
+alla conclusione del match. Tutti gli stati di un incontro appartengono allo
+stesso split.
+
+Il punto conclusivo di un game viene inferito soltanto quando è ricostruibile
+legalmente con un unico punto; `is_inferred` lo segnala. Il decoder controlla
+punteggi, servizio, tie-break, numerazione e risultati finali. Supporta i
+formati configurati 2023-2026: Masters al meglio dei tre set, Slam al meglio
+dei cinque, tie-break a 7 punti o a 10 nel quinto set degli Slam.
+
+`report.json` riporta conteggi, motivi degli scarti, tornei, copertura, ranking
+mancanti e politica dello storico. La pubblicazione dell'output avviene dopo
+il completamento della preparazione.
+
+## Feature e metadati
+
+Le 23 feature sono:
+
+- `best_of`, `surface`.
+- `player_a_serve_win_rate`, `player_a_return_win_rate`,
+  `player_b_serve_win_rate`, `player_b_return_win_rate`.
+- `player_a_rank`, `player_b_rank`,
+  `player_a_rank_missing`, `player_b_rank_missing`.
+- `sets_a`, `sets_b`, `games_a`, `games_b`.
+- `regular_score_a`, `regular_score_b`.
+- `is_tiebreak`, `tiebreak_target`, `tiebreak_score_a`, `tiebreak_score_b`.
+- `player_a_is_serving`, `player_a_momentum`, `player_b_momentum`.
+
+A viene scelto con il primo byte di SHA-256 del `match_id` modulo due:
+l'orientamento è stabile e indipendente da ranking, servizio e risultato.
+Gli ID e la data sono metadati; non entrano nelle feature.
+
+Lo storico di servizio e risposta usa soltanto gli incontri accettati dei
+giorni precedenti, inclusi i punti inferiti. Tutti i match di una giornata
+ricevono lo storico prima dell'aggiornamento con gli esiti del giorno.
+Lo storico resta costante durante un incontro.
+
+Senza storico personale si usa una media globale per ruolo, inizialmente
+0,5. Nel 2024 comprende solo i giorni già conclusi; dal 2025 resta fissata
+sul 2024. Gli storici personali continuano ad aggiornarsi a fine giornata
+anche nel 2025 e nel 2026, senza riaddestrare il modello.
+
+I ranking sono le statistiche `singles` della stagione precedente:
+2023 per incontri 2024, 2024 per 2025, 2025 per 2026. Sono un'approssimazione
+annuale, non ranking settimanali. Un ranking assente vale zero con indicatore
+`rank_missing = 1`.
+
+La superficie proviene da `config/tournaments.json` ed è codificata con
+`StringIndexer` e `OneHotEncoder`. Il punteggio ordinario usa 0/1/2/3/4
+per 0/15/30/40/vantaggio; nel tie-break si usano i conteggi dedicati.
+`player_a_is_serving` vale 1 quando serve A.
+
+Il momentum conta i punti consecutivi già vinti dal giocatore. Il vincitore
+incrementa la propria serie e azzera quella dell'avversario dopo la costruzione
+della riga corrente. La serie continua tra game, set e cambi di servizio;
+riparte da zero a inizio incontro.
+
+Ogni riga pesa `1 / numero_di_stati_del_match`: ciascun incontro contribuisce
+con peso totale uno nel training e nelle metriche.
+
+## Training con Docker
+
+```bash
+docker compose up --build spark-ml
 ```
 
-## Cosa fa lo script
+Compose monta `training/data/processed` in sola lettura nel container e rende
+persistente `training/artifacts`. L'immagine contiene Python 3.13, Java e
+PySpark ML 4.2.0. Spark gira in locale con due thread.
 
-1. Legge i JSON delle tre annate e controlla i duplicati tramite `event_key`.
-2. Seleziona i match `Finished` del tabellone principale dei tornei configurati.
-3. Ricostruisce i punti e scarta l'intero incontro se la sequenza è incoerente.
-4. Assegna il 2024 al training, il 2025 alla validation e il 2026 al test,
-   poi salva i tre Parquet, lo schema e il riepilogo.
+Il training legge lo schema, codifica la superficie e costruisce
+`VectorAssembler → GBTClassifier`. Prova otto combinazioni sul 2024:
+`maxDepth=[3,5]`, `maxIter=[20,60]`, `stepSize=[0.05,0.1]`, seed 42.
+Sceglie la Log Loss minore sul 2025 e riaddestra da zero su 2024 + 2025.
 
-Le regole sono in `tennis_rules.py`. Il percorso è
-`decode_match` → `decode_set` → `decode_game` oppure `decode_tiebreak`.
-`group_sets` raggruppa i record per set. Ogni punto restituito contiene il
-punteggio precedente, game e set già vinti, battitore e vincitore del punto.
+Il modello selezionato usa profondità 3, 60 iterazioni e passo 0,1.
+Se il modello completo con lo stesso schema esiste già, il comando salta
+il training prima di avviare Spark. Per un nuovo addestramento:
 
-`prepare_dataset.py` mantiene la classe `PrepareDataset`: legge i JSON, chiama
-`tennis_rules.decode_match(match)` e costruisce le 18 colonne con `create_row`.
-Infine assegna gli split per stagione e scrive i Parquet con PyArrow. La lista
-dei punti rimane in memoria: non è un nuovo file intermedio.
+```bash
+docker compose run --rm spark-ml python -m training.train_model --output-dir training/artifacts/run2
+```
 
-Ogni stagione resta interamente nello stesso split, senza percentuali
-prestabilite. Serve almeno un incontro valido per ciascuna delle tre annate.
-I duplicati identici nella stessa annata sono ignorati; versioni diverse dello
-stesso incontro, identificativi ripetuti tra annate o date non coerenti con la
-cartella annuale interrompono il programma.
+Per cambiare dataset usare `TENNIS_DATASET_DIR`; il percorso interno rimane
+`/app/training/data/processed`.
 
-Le righe sono raccolte in liste in memoria e scritte con `parquet.write_table`.
+## Valutazione finale
 
-## Protocollo di addestramento e valutazione
+```bash
+docker compose run --rm spark-ml python -m training.evaluate_model
+```
 
-Il training del modello verrà implementato in un branch successivo con queste fasi:
+Carica il modello salvato, controlla lo schema e valuta il 2026 senza training.
+Se il report esiste e corrisponde agli stessi artefatti, mostra il risultato
+registrato. Il modello e il test sono identificati nel report tramite SHA-256.
 
-1. Addestramento su `train.parquet` (2024) e scelta degli iperparametri usando
-   `validation.parquet` (2025).
-2. Scelti gli iperparametri e fissata la procedura, riaddestramento su
-   `train.parquet` + `validation.parquet` (2024 e 2025).
-3. Valutazione definitiva su `test.parquet` (2026), mai usato per addestrare,
-   scegliere iperparametri o ottimizzare il modello, inclusa l'eventuale
-   calibrazione delle probabilità o scelta della soglia di classificazione.
-
-Le metriche previste sono:
-
-| Metrica | Cosa misura | Direzione migliore |
+| Metrica live | Validation 2025 | Test 2026 |
 | --- | --- | --- |
-| Accuracy | Percentuale di punti classificati correttamente alla soglia scelta | Più alta |
-| Log Loss | Qualità delle probabilità, penalizzando gli errori molto sicuri | Più bassa |
-| Brier Score | Errore quadratico medio tra probabilità del battitore ed esito 0/1 | Più basso |
-| ROC-AUC | Capacità di ordinare i punti vinti dal battitore sopra quelli persi | Più alta |
+| Accuracy | 76,91% | 78,18% |
+| Log Loss | 0,472565 | 0,456618 |
+| Brier Score | 0,156105 | 0,149090 |
+| ROC-AUC | 0,854676 | 0,866584 |
 
-## Riepilogo della preparazione
+Le metriche di validation appartengono al candidato addestrato sul 2024;
+quelle del test al modello finale riaddestrato su 2024 + 2025.
+Il test contiene 911 incontri dal 18 gennaio al 17 ottobre 2026.
 
-Ogni preparazione completata salva `report.json` accanto ai Parquet e stampa
-un riepilogo dei conteggi in console. Il file contiene:
+## File Python
 
-- `input_files`: numero di file JSON letti.
-- `matches_read`, `unique_matches`, `identical_duplicates`: incontri letti,
-  incontri unici e occorrenze duplicate identiche ignorate.
-- `filtered_matches` e `filtered_by_reason`: incontri esclusi dai filtri,
-  raggruppati per motivo (qualificazioni, stato, tipo o torneo).
-- `rejected_matches` e `rejected_by_reason`: incontri scartati durante la
-  ricostruzione, raggruppati per messaggio di errore.
-- `rejected_details`: identificativo dell'incontro, chiave del torneo e motivo
-  di ogni scarto durante la ricostruzione.
-- `accepted_matches`: numero di incontri inclusi nel dataset.
-- `tournaments`: nome e conteggi `read`, `filtered`, `rejected`, `accepted`
-  per ogni chiave torneo. `read` conta gli incontri unici; i tornei configurati
-  senza incontri hanno tutti i conteggi a zero.
-- `splits`: anno, incontri, punti, punti inferiti, prima/ultima data effettiva e
-  conteggi degli incontri accettati per chiave torneo di training, validation e
-  test. I tornei configurati senza incontri accettati nello split valgono zero.
-
-## Le 18 colonne
-
-Ogni riga descrive lo stato **prima** di un punto.
-
-| Gruppo | Colonne |
-| --- | --- |
-| 6 metadati | `match_id`, `match_date`, `server_id`, `receiver_id`, `point_index`, `is_inferred` |
-| 11 feature | `best_of`, `sets_server`, `sets_receiver`, `games_server`, `games_receiver`, `regular_score_server`, `regular_score_receiver`, `is_tiebreak`, `tiebreak_target`, `tiebreak_score_server`, `tiebreak_score_receiver` |
-| 1 target | `label`: 1 se vince il battitore, 0 se vince il ribattitore |
-
-Le feature sono orientate rispetto al battitore (`server`) e al ribattitore
-(`receiver`). Il punteggio ordinario usa la codifica
-`0/1/2/3/4 = 0/15/30/40/A`. Nel tie-break si usano conteggi numerici nelle
-colonne dedicate e le colonne del punteggio ordinario valgono zero.
-
-`schema.json` elenca feature, metadati, target e codifica del punteggio.
-
-## Perché serve ricostruire il punteggio
-
-Nel feed `score` è il punteggio dopo il punto. Confrontandolo con quello
-precedente si ricava il vincitore, mentre la riga contiene lo stato precedente.
-Il punto conclusivo di un game viene aggiunto soltanto quando il vincitore
-registrato può chiuderlo legalmente con un unico punto; `is_inferred` lo segnala.
-
-Lo script controlla vantaggi, servizio, tie-break, continuità della numerazione
-e corrispondenza con i risultati finali. I formati supportati sono quelli dei
-main draw 2023-2026: Slam al meglio dei cinque set e Masters al meglio dei tre,
-tie-break sul 6-6 a 7 punti, oppure a 10 nel quinto set degli Slam.
-
-## File
-
-- `fetch_matches.py`: download degli incontri per torneo.
-- `config/tournaments.json`: elenco dei tornei.
-- `tennis_rules.py`: funzioni per punteggi, servizio e ricostruzione dei punti.
-- `prepare_dataset.py`: lettura, creazione delle 18 colonne, split e salvataggio.
-- `requirements.txt`: dipendenze Python.
+- `fetch_matches.py`: download degli incontri per torneo e anno.
+- `fetch_players.py`: download dei profili giocatori, riutilizzando quelli già salvati.
+- `tennis_rules.py`: ricostruzione e controllo dei punteggi.
+- `historical_features.py`: storico dei giocatori aggiornato a fine giornata.
+- `player_rankings.py`: ranking singles della stagione precedente.
+- `prepare_dataset.py`: dataset live, split annuali, schema e report.
+- `train_model.py`: selezione sul 2025 e riaddestramento su 2024 + 2025.
+- `evaluate_model.py`: metriche finali del modello fissato sul 2026.
