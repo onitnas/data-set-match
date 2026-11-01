@@ -7,3 +7,80 @@ services:
     volumes:
       - ${TENNIS_DATASET_DIR:-./training/data/processed}:/app/training/data/processed:ro
       - ./training/artifacts:/app/training/artifacts
+
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  kafka-init:
+    image: apache/kafka:4.4.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /opt/kafka/bin/kafka-topics.sh
+      - --bootstrap-server
+      - kafka:9092
+      - --create
+      - --if-not-exists
+      - --topic
+      - ${KAFKA_TOPIC:-tennis-points}
+      - --partitions
+      - "1"
+      - --replication-factor
+      - "1"
+    restart: "no"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:9.5.5
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-tennis-points}
+      PIPELINE_WORKERS: 1
+      PIPELINE_ORDERED: "true"
+      PIPELINE_ECS_COMPATIBILITY: disabled
+      LS_JAVA_OPTS: -Xms256m -Xmx512m
+    volumes:
+      - ./ingestion/pipeline:/usr/share/logstash/pipeline:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:9.5.5
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    environment:
+      TENNIS_WEBSOCKET_URL: ${TENNIS_WEBSOCKET_URL:-wss://wss.api-tennis.com/live?APIkey=${API_TENNIS_KEY:-}&timezone=Europe/Rome}
+    volumes:
+      - ./ingestion/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      logstash:
+        condition: service_started
+
+volumes:
+  kafka-data:
+  filebeat-data:

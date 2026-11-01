@@ -1,0 +1,26 @@
+filebeat.inputs:
+  - type: streaming
+    id: tennis-live-websocket
+    enabled: true
+    stream_type: websocket
+    url: "${TENNIS_WEBSOCKET_URL}"
+    retry:
+      max_attempts: 5
+      wait_min: 1s
+      wait_max: 30s
+    redact:
+      fields: []
+    # Un messaggio può contenere un singolo match oppure un array di match.
+    # Ogni match diventa un evento distinto, mantenendo il payload originale.
+    program: |
+      bytes(state.response).decode_json().as(body, {
+        "events": (type(body) == list ? body : [body]).map(match, {
+          "match": match
+        })
+      })
+
+output.logstash:
+  hosts: ["logstash:5044"]
+
+logging.level: info
+logging.metrics.enabled: false
