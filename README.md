@@ -87,6 +87,10 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   ├── pipeline/
 │   │   └── logstash.conf     # Filtri, normalizzazione e output Kafka
 │   └── README.md             # Configurazione e verifica manuale
+├── streaming/                # Elaborazione continua degli eventi Kafka
+│   ├── Dockerfile            # Ambiente Spark Structured Streaming
+│   ├── stream_matches.py     # Primo lettore Spark Structured Streaming
+│   └── README.md             # Avvio e verifica manuale
 ├── docker-compose.yml        # Ambiente containerizzato
 ├── LICENSE
 └── README.md

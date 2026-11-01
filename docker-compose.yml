@@ -8,6 +8,21 @@ services:
       - ${TENNIS_DATASET_DIR:-./training/data/processed}:/app/training/data/processed:ro
       - ./training/artifacts:/app/training/artifacts
 
+  spark-streaming:
+    build:
+      context: .
+      dockerfile: streaming/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-tennis-points}
+      SPARK_CHECKPOINT_LOCATION: /app/checkpoints/kafka-reader
+    volumes:
+      - ./streaming:/app/streaming:ro
+      - streaming-checkpoints:/app/checkpoints
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
   kafka:
     image: apache/kafka:4.4.0
     environment:
@@ -84,3 +99,4 @@ services:
 volumes:
   kafka-data:
   filebeat-data:
+  streaming-checkpoints:
