@@ -82,6 +82,11 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   ├── Dockerfile            # Ambiente Spark ML
 │   ├── requirements.txt      # Dipendenze per raccolta e preparazione
 │   └── README.md             # Documentazione della fase ML
+├── ingestion/                # Acquisizione live e pubblicazione su Kafka
+│   ├── filebeat.yml          # Connessione WebSocket e decodifica JSON
+│   ├── pipeline/
+│   │   └── logstash.conf     # Filtri, normalizzazione e output Kafka
+│   └── README.md             # Configurazione e verifica manuale
 ├── docker-compose.yml        # Ambiente containerizzato
 ├── LICENSE
 └── README.md
