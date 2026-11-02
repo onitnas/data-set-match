@@ -2,7 +2,24 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, StringType, StructField, StructType
+from pyspark.sql.types import ArrayType, BooleanType, IntegerType, StringType, StructField, StructType
+
+from streaming.match_state import decode_live_state
+
+
+POINT_SCHEMA = StructType([
+    StructField("number_point", StringType()),
+    StructField("score", StringType())
+])
+
+GAME_SCHEMA = StructType([
+    StructField("set_number", StringType()),
+    StructField("number_game", StringType()),
+    StructField("player_served", StringType()),
+    StructField("serve_winner", StringType()),
+    StructField("score", StringType()),
+    StructField("points", ArrayType(POINT_SCHEMA))
+])
 
 
 SET_SCORE_SCHEMA = StructType([
@@ -19,17 +36,30 @@ MATCH_SCHEMA = StructType([
     StructField("tournament_key", StringType()),
     StructField("tournament_name", StringType()),
     StructField("event_status", StringType()),
+    StructField("event_winner", StringType()),
     StructField("event_final_result", StringType()),
     StructField("event_game_result", StringType()),
     StructField("event_serve", StringType()),
     StructField("event_qualification", StringType()),
-    StructField("scores", ArrayType(SET_SCORE_SCHEMA))
+    StructField("scores", ArrayType(SET_SCORE_SCHEMA)),
+    StructField("pointbypoint", ArrayType(GAME_SCHEMA))
 ])
 
 EVENT_SCHEMA = StructType([
     StructField("match", MATCH_SCHEMA),
     StructField("_corrupt_record", StringType())
 ])
+
+STATE_SCHEMA = StructType([
+    StructField("state_ok", BooleanType()),
+    StructField("state_reason", StringType()),
+    StructField("is_finished", BooleanType())
+] + [StructField(name, IntegerType()) for name in [
+    "best_of", "server_index", "points_seen", "inferred_points",
+    "sets_1", "sets_2", "games_1", "games_2",
+    "regular_score_1", "regular_score_2", "is_tiebreak", "tiebreak_target",
+    "tiebreak_score_1", "tiebreak_score_2", "momentum_1", "momentum_2"
+]])
 
 
 if __name__ == "__main__":
@@ -80,7 +110,11 @@ if __name__ == "__main__":
         ).otherwise(
             F.try_element_at("data.match.scores", F.lit(-1))
         )
-        parsed = parsed.withColumn("set_score", set_score)
+        # La UDF Python applica le regole del tennis a ciascuno snapshot completo.
+        reconstruct_state = F.udf(decode_live_state, STATE_SCHEMA)
+        parsed = parsed.withColumn("set_score", set_score).withColumn(
+            "state", reconstruct_state("data.match")
+        )
         server = (
             F.when(F.col("data.match.event_serve") == "First Player",
                    F.col("data.match.event_first_player"))
@@ -104,6 +138,9 @@ if __name__ == "__main__":
             F.col("data.match.event_qualification").alias("qualification"),
             (F.col("data._corrupt_record").isNull()
              & F.col("data.match.event_key").isNotNull()).alias("parse_ok"),
+            "state.state_ok", "state.state_reason", "state.is_finished",
+            "state.points_seen", "state.inferred_points",
+            "state.momentum_1", "state.momentum_2",
             "partition", "offset", "timestamp"
         )
 

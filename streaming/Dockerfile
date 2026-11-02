@@ -8,7 +8,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 COPY streaming/*.py ./streaming/
+COPY training/tennis_rules.py ./training/tennis_rules.py
 
 CMD ["spark-submit", "--master", "local[2]", "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0", "streaming/stream_matches.py"]

@@ -89,7 +89,8 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   └── README.md             # Configurazione e verifica manuale
 ├── streaming/                # Elaborazione continua degli eventi Kafka
 │   ├── Dockerfile            # Ambiente Spark Structured Streaming
-│   ├── stream_matches.py     # Primo lettore Spark Structured Streaming
+│   ├── stream_matches.py     # Lettura Kafka e decodifica degli aggiornamenti
+│   ├── match_state.py        # Ricostruzione del punteggio e del momentum
 │   └── README.md             # Avvio e verifica manuale
 ├── docker-compose.yml        # Ambiente containerizzato
 ├── LICENSE

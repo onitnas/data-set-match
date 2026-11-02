@@ -18,6 +18,7 @@ services:
       SPARK_CHECKPOINT_LOCATION: /app/checkpoints/kafka-reader
     volumes:
       - ./streaming:/app/streaming:ro
+      - ./training/tennis_rules.py:/app/training/tennis_rules.py:ro
       - streaming-checkpoints:/app/checkpoints
     depends_on:
       kafka-init:
