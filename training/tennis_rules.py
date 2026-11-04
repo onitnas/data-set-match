@@ -1,262 +1,270 @@
-# Regole e ricostruzione dei punteggi: nessuna lettura o scrittura di file.
+"""Regole del tennis e lettura del point-by-point dell'API."""
+
 GAME_POINTS = {"0": 0, "15": 1, "30": 2, "40": 3, "A": 4}
 BEST_OF_5_TOURNAMENTS = ["1236", "2155", "2053", "1217"]
 VALID_YEARS = [2023, 2024, 2025, 2026]
-
+PLAYER_ORIENTATION = "player_a_index = 0; player_b_index = 1; fixed_for_entire_match"
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
 
-def split_score(score, is_tiebreak=False):
-    require(isinstance(score, str), "Punteggio non valido")
-    scores = score.split("-")
-    require(len(scores) == 2, "Punteggio non valido")
-    player1_score = scores[0].strip()
-    player2_score = scores[1].strip()
-
-    if is_tiebreak:
-        require(player1_score.isdecimal() and player2_score.isdecimal(), "Punteggio numerico non valido")
-        return [int(player1_score), int(player2_score)]
-
-    # Per il modello: 0/15/30/40/A diventano 0/1/2/3/4.
-    if player1_score not in GAME_POINTS or player2_score not in GAME_POINTS:
-        raise ValueError("Punteggio del game non valido")
-    score = [GAME_POINTS[player1_score], GAME_POINTS[player2_score]]
-    if 4 in score and score != [4, 3] and score != [3, 4]:
-        raise ValueError("Vantaggio non valido")
-    return score
 
 def get_player(name):
     if name == "First Player":
         return 0
-    elif name == "Second Player":
+    if name == "Second Player":
         return 1
-    else:
-        raise ValueError("Giocatore non valido")
+    raise ValueError("Giocatore non valido")
 
-def next_score(score, winner):
-    own = score[winner]
-    other = score[1 - winner]
-    if own == 4 or (own == 3 and other < 3):
-        return None  # Il game termina con questo punto.
-    if own == 3 and other == 4:
-        return [3, 3]
-    result = score.copy()
-    result[winner] += 1
-    return result
-
-def ordered_records(records, field):
-    if not isinstance(records, list) or len(records) == 0:
-        raise ValueError("Sequenza vuota")
-    for record in records:
-        if not isinstance(record, dict):
-            raise ValueError("Record non valido")
-        number = str(record.get(field, ""))
-        if not number.isdecimal() or int(number) < 1:
-            raise ValueError("Numero di punto o game non valido")
-    ordered = sorted(records, key=lambda record: int(record[field]))
-    for index, record in enumerate(ordered):
-        if int(record[field]) != index + 1:
-            raise ValueError("Numerazione mancante o duplicata")
-    return ordered
-
-def decode_game(game):
-    server = get_player(game.get("player_served"))
-    winner = get_player(game.get("serve_winner"))
-    single_points = ordered_records(game.get("points"), "number_point")
-    score = [0, 0]
-    points = []
-
-    for single_point in single_points:
-        new_score = split_score(single_point.get("score"))
-        point_winner = None
-        for player in [0, 1]:
-            if next_score(score, player) == new_score:
-                point_winner = player
-        if point_winner is None:
-            raise ValueError("Passaggio di punteggio non valido")
-        points.append({"score": score, "server": server,
-                       "winner": point_winner, "is_inferred": False})
-        score = new_score
-
-    # Nel feed il punto che chiude il game normalmente manca.
-    if next_score(score, winner) is not None:
-        raise ValueError("Impossibile ricostruire il punto conclusivo")
-    points.append({"score": score, "server": server,
-                   "winner": winner, "is_inferred": True})
-    return points
-
-def decode_tiebreak(records, target):
-    records = ordered_records(records, "number_game")
-    first_server = get_player(records[0].get("player_served"))
-    score = [0, 0]
-    points = []
-    for index, record in enumerate(records):
-        if max(score) >= target and abs(score[0] - score[1]) >= 2:
-            raise ValueError("Punti successivi alla fine del tie-break")
-        server = get_player(record.get("player_served"))
-        expected_server = first_server
-        if ((index + 1) // 2) % 2 == 1:
-            expected_server = 1 - first_server
-        if server != expected_server:
-            raise ValueError("Servizio del tie-break non valido")
-        winner = get_player(record.get("serve_winner"))
-        new_score = split_score(record.get("score"), True)
-        expected_score = score.copy()
-        expected_score[winner] += 1
-        if new_score != expected_score:
-            raise ValueError("Passaggio di punteggio del tie-break non valido")
-        points.append({"score": score, "server": server,
-                       "winner": winner, "is_inferred": False})
-        score = new_score
-    if max(score) < target or abs(score[0] - score[1]) < 2:
-        raise ValueError("Tie-break incompleto")
-    return points, score
 
 def get_best_of(match):
-    if str(match["tournament_key"]) in BEST_OF_5_TOURNAMENTS:
-        return 5
-    return 3
+    return 5 if str(match["tournament_key"]) in BEST_OF_5_TOURNAMENTS else 3
+
+
+def get_tiebreak_target(games, sets, best_of):
+    if games != [6, 6]:
+        return 0
+    set_number = sum(sets) + 1
+    return 10 if best_of == 5 and set_number == 5 else 7
+
+
+def split_score(value, is_tiebreak=False):
+    require(isinstance(value, str), "Punteggio non valido")
+    parts = [part.strip() for part in value.split("-")]
+    require(len(parts) == 2, "Punteggio non valido")
+
+    if is_tiebreak:
+        require(all(part.isdecimal() for part in parts), "Punteggio numerico non valido")
+        return [int(parts[0]), int(parts[1])]
+
+    require(all(part in GAME_POINTS for part in parts), "Punteggio del game non valido")
+    score = [GAME_POINTS[parts[0]], GAME_POINTS[parts[1]]]
+    require(4 not in score or score in [[4, 3], [3, 4]], "Vantaggio non valido")
+    return score
+
+def ordered_records(records, field):
+    require(isinstance(records, list) and bool(records), "Sequenza vuota")
+
+    for record in records:
+        require(isinstance(record, dict), "Record non valido")
+
+        number = str(record.get(field, ""))
+
+        require(number.isdecimal() and int(number) > 0, "Numero di punto o game non valido")
+
+    records = sorted(records, key=lambda record: int(record[field]))
+
+    for expected, record in enumerate(records, 1):
+        require(int(record[field]) == expected, "Numerazione mancante o duplicata")
+    return records
+
+
+def next_state(score, games, sets, winner, best_of):
+    new_score = score.copy()
+    new_games = games.copy()
+    new_sets = sets.copy()
+    game_result = None
+    tiebreak_result = None
+
+    # Tie-break sul 6-6.
+    if games == [6, 6]:
+        target = get_tiebreak_target(games, sets, best_of)
+        new_score[winner] += 1
+        if new_score[winner] >= target and new_score[winner] - new_score[1 - winner] >= 2:
+            new_games[winner] += 1
+            game_result = new_games.copy()
+            tiebreak_result = new_score.copy()
+            new_sets[winner] += 1
+            new_games = [0, 0]
+            new_score = [0, 0]
+
+    # Game normale: 0, 15, 30, 40, vantaggio sono codificati come 0, 1, 2, 3, 4.
+    else:
+        own = score[winner]
+        other = score[1 - winner]
+        game_finished = False
+
+        if own == 4 or (own == 3 and other < 3):
+            game_finished = True
+        elif own == 3 and other == 4:
+            new_score = [3, 3]
+        else:
+            new_score[winner] += 1
+
+        if game_finished:
+            new_games[winner] += 1
+            game_result = new_games.copy()
+            new_score = [0, 0]
+            if new_games[winner] >= 6 and new_games[winner] - new_games[1 - winner] >= 2:
+                new_sets[winner] += 1
+                new_games = [0, 0]
+
+    return {
+        "score": new_score,
+        "games": new_games,
+        "sets": new_sets,
+        "game_result": game_result,
+        "tiebreak_result": tiebreak_result
+    }
+
+
+def add_point(points, state, winner, server, best_of, is_inferred=False):
+    points.append({
+        "score": state["score"].copy(),
+        "games": state["games"].copy(),
+        "sets": state["sets"].copy(),
+        "server": server,
+        "winner": winner,
+        "best_of": best_of,
+        "tiebreak_target": get_tiebreak_target(state["games"], state["sets"], best_of),
+        "is_inferred": is_inferred,
+        "point_index": len(points) + 1
+    })
+
+
+def decode_game(game, state, best_of, points):
+    server = get_player(game.get("player_served"))
+    for record in ordered_records(game.get("points"), "number_point"):
+        before = state["score"]
+        observed = split_score(record.get("score"))
+
+        if observed[0] > before[0]:
+            winner = 0
+        elif observed[1] > before[1]:
+            winner = 1
+        elif before == [4, 3] and observed == [3, 3]:
+            winner = 1  # Il secondo giocatore annulla il vantaggio del primo.
+        elif before == [3, 4] and observed == [3, 3]:
+            winner = 0
+        else:
+            raise ValueError("Passaggio di punteggio non valido")
+
+        add_point(points, state, winner, server, best_of)
+        # Il record riporta il punteggio dopo il punto; salviamo prima lo stato precedente.
+        state = {**state, "score": observed}
+
+    # Il feed omette il punto conclusivo: lo aggiungiamo solo se chiude il game.
+    winner = get_player(game.get("serve_winner"))
+    updated = next_state(state["score"], state["games"], state["sets"], winner, best_of)
+    require(updated["game_result"] is not None, "Impossibile ricostruire il punto conclusivo")
+    add_point(points, state, winner, server, best_of, is_inferred=True)
+    return updated
+
+
+def decode_tiebreak(records, state, best_of, points):
+    records = ordered_records(records, "number_game")
+    first_server = get_player(records[0].get("player_served"))
+    starting_sets = state["sets"].copy()
+    target = get_tiebreak_target(state["games"], state["sets"], best_of)
+
+    for index, record in enumerate(records):
+        require(state["sets"] == starting_sets, "Punti successivi alla fine del tie-break")
+        server = get_player(record.get("player_served"))
+        expected_server = first_server if ((index + 1) // 2) % 2 == 0 else 1 - first_server
+        require(server == expected_server, "Servizio del tie-break non valido")
+
+        winner = get_player(record.get("serve_winner"))
+        observed = split_score(record.get("score"), True)
+        add_point(points, state, winner, server, best_of)
+        if max(observed) >= target and abs(observed[0] - observed[1]) >= 2:
+            state = next_state(state["score"], state["games"], state["sets"], winner, best_of)
+            require(state["game_result"] is not None, "Tie-break incompleto")
+        else:
+            state = {**state, "score": observed}
+
+    require(state["sets"] != starting_sets, "Tie-break incompleto")
+    return state, first_server
+
 
 def group_sets(match, best_of):
     records = match.get("pointbypoint")
-    if not isinstance(records, list) or len(records) == 0:
-        raise ValueError("Punti assenti")
-
-    grouped_sets = {}
+    require(isinstance(records, list) and bool(records), "Punti assenti")
+    grouped = {}
     for record in records:
-        if not isinstance(record, dict):
-            raise ValueError("Record del match non valido")
+        require(isinstance(record, dict), "Record del match non valido")
         parts = str(record.get("set_number", "")).split()
-        if len(parts) not in [2, 3] or parts[0] != "Set" or not parts[1].isdecimal():
-            raise ValueError("Numero set non valido")
-        set_number = int(parts[1])
-        if set_number < 1 or set_number > best_of:
-            raise ValueError("Set fuori dal formato previsto")
-        if set_number not in grouped_sets:
-            grouped_sets[set_number] = {"number": set_number, "games": [], "tiebreak": []}
-
+        require(len(parts) in [2, 3] and parts[0] == "Set" and parts[1].isdecimal(),
+                "Numero set non valido")
+        number = int(parts[1])
+        require(1 <= number <= best_of, "Set fuori dal formato previsto")
+        if number not in grouped:
+            grouped[number] = {"number": number, "games": [], "tiebreak": []}
         if len(parts) == 2:
-            grouped_sets[set_number]["games"].append(record)
-        elif parts[2] == "TieBreak":
-            grouped_sets[set_number]["tiebreak"].append(record)
+            grouped[number]["games"].append(record)
         else:
-            raise ValueError("Tipo set non valido")
+            require(parts[2] == "TieBreak", "Tipo set non valido")
+            grouped[number]["tiebreak"].append(record)
 
-    match_sets = []
-    for set_number in sorted(grouped_sets):
-        if set_number != len(match_sets) + 1:
-            raise ValueError("Sequenza set non valida")
-        match_sets.append(grouped_sets[set_number])
-    return match_sets
-
-def decode_set(set_data, sets, next_server, best_of):
-    set_number = set_data["number"]
-    game_records = ordered_records(set_data["games"], "number_game")
-    games = [0, 0]
-    points = []
-    set_winner = None
-    tiebreak_score = None
-
-    for game in game_records:
-        if set_winner is not None:
-            raise ValueError("Game successivo alla fine del set")
-        target = 0
-        if games == [6, 6]:
-            placeholder = game.get("points")
-            if not isinstance(placeholder, list) or len(placeholder) != 1:
-                raise ValueError("Riepilogo tie-break non valido")
-            point = placeholder[0]
-            if not isinstance(point, dict) or point.get("score") != " - ":
-                raise ValueError("Riepilogo tie-break non valido")
-            if str(point.get("number_point")) != "1":
-                raise ValueError("Numero punto del riepilogo tie-break non valido")
-            target = 7
-            if best_of == 5 and set_number == 5:
-                target = 10
-            game_points, tiebreak_score = decode_tiebreak(set_data["tiebreak"], target)
-        else:
-            game_points = decode_game(game)
-
-        first_server = game_points[0]["server"]
-        if next_server is not None and first_server != next_server:
-            raise ValueError("Alternanza del servizio non valida")
-        winner = game_points[-1]["winner"]
-        if get_player(game.get("serve_winner")) != winner:
-            raise ValueError("Vincitore del game non coerente")
-
-        # Copiamo lo stato precedente: i conteggi cambiano dopo il game.
-        for point in game_points:
-            point["games"] = games.copy()
-            point["sets"] = sets.copy()
-            point["best_of"] = best_of
-            point["tiebreak_target"] = target
-            points.append(point)
-        games[winner] += 1
-        if split_score(game.get("score"), True) != games:
-            raise ValueError("Punteggio dei game non coerente")
-        next_server = 1 - first_server
-        if target > 0 or (max(games) >= 6 and abs(games[0] - games[1]) >= 2):
-            set_winner = winner
-
-    if len(set_data["tiebreak"]) > 0 and tiebreak_score is None:
-        raise ValueError("Tie-break senza un game a 6-6")
-    if set_winner is None:
-        raise ValueError("Set incompleto")
-    final_score = [str(games[0]), str(games[1])]
-    if tiebreak_score is not None:
-        for player in [0, 1]:
-            final_score[player] += "." + str(tiebreak_score[player])
-    return set_winner, next_server, final_score, points
-
-
-def decode_match(match):
-    best_of = get_best_of(match)
-    sets_to_win = best_of // 2 + 1
-    match_sets = group_sets(match, best_of)
-    sets = [0, 0]
-    points = []
-    final_scores = {}
-    next_server = None
-
-    for set_data in match_sets:
-        if max(sets) >= sets_to_win:
-            raise ValueError("Set successivo alla fine del match")
-        winner, next_server, final_score, set_points = decode_set(set_data, sets, next_server, best_of)
-        points.extend(set_points)
-        sets[winner] += 1
-        final_scores[set_data["number"]] = final_score
-
-    if max(sets) != sets_to_win:
-        raise ValueError("Match incompleto")
-    check_final_scores(match, final_scores)
-    if split_score(match.get("event_final_result"), True) != sets:
-        raise ValueError("Risultato finale non coerente")
-    winner = sets.index(max(sets))
-    if get_player(match.get("event_winner")) != winner:
-        raise ValueError("Vincitore del match non coerente")
-    for index, point in enumerate(points, 1):
-        point["point_index"] = index
-    return points
+    require(sorted(grouped) == list(range(1, len(grouped) + 1)), "Sequenza set non valida")
+    return [grouped[number] for number in sorted(grouped)]
 
 
 def check_final_scores(match, final_scores):
     scores = match.get("scores")
-    if not isinstance(scores, list):
-        raise ValueError("Punteggi finali assenti")
+    require(isinstance(scores, list), "Punteggi finali assenti")
     seen = set()
-    for score in scores:
-        number = int(score["score_set"])
-        if number < 1 or number in seen:
-            raise ValueError("Punteggi set duplicati o non validi")
+    for record in scores:
+        number = int(record["score_set"])
+        require(number > 0 and number not in seen, "Punteggi set duplicati o non validi")
         seen.add(number)
-        result = [str(score["score_first"]), str(score["score_second"])]
+        observed = [str(record["score_first"]), str(record["score_second"])]
         if number in final_scores:
-            if final_scores[number] != result:
-                raise ValueError("Punteggio finale del set non coerente")
-        elif number <= len(final_scores) or result != ["0", "0"]:
-            raise ValueError("Set aggiuntivo non valido")
-    for number in final_scores:
-        if number not in seen:
-            raise ValueError("Punteggio finale del set mancante")
+            require(observed == final_scores[number], "Punteggio finale del set non coerente")
+        else:
+            require(number > len(final_scores) and observed == ["0", "0"], "Set aggiuntivo non valido")
+    require(all(number in seen for number in final_scores), "Punteggio finale del set mancante")
+
+
+def decode_match(match):
+    """Legge set e game, restituendo gli stati precedenti a ogni punto."""
+    best_of = get_best_of(match)
+    sets_to_win = best_of // 2 + 1
+    state = {"score": [0, 0], "games": [0, 0], "sets": [0, 0]}
+    points = []
+    final_scores = {}
+    next_server = None
+
+    for set_data in group_sets(match, best_of):
+        require(max(state["sets"]) < sets_to_win, "Set successivo alla fine del match")
+        starting_sets = state["sets"].copy()
+        tiebreak_played = False
+
+        for game in ordered_records(set_data["games"], "number_game"):
+            require(state["sets"] == starting_sets, "Game successivo alla fine del set")
+            if state["games"] == [6, 6]:
+                # Il tredicesimo game è un riepilogo; i punti sono nei record TieBreak.
+                placeholder = game.get("points")
+                require(isinstance(placeholder, list) and len(placeholder) == 1,
+                        "Riepilogo tie-break non valido")
+                require(isinstance(placeholder[0], dict)
+                        and placeholder[0].get("score") == " - "
+                        and str(placeholder[0].get("number_point")) == "1",
+                        "Riepilogo tie-break non valido")
+                state, server = decode_tiebreak(set_data["tiebreak"], state, best_of, points)
+                tiebreak_played = True
+            else:
+                server = get_player(game.get("player_served"))
+                state = decode_game(game, state, best_of, points)
+
+            require(next_server is None or server == next_server, "Alternanza del servizio non valida")
+            require(get_player(game.get("serve_winner")) == points[-1]["winner"],
+                    "Vincitore del game non coerente")
+            require(split_score(game.get("score"), True) == state["game_result"],
+                    "Punteggio dei game non coerente")
+            next_server = 1 - server
+
+        require(not set_data["tiebreak"] or tiebreak_played, "Tie-break senza un game a 6-6")
+        require(state["sets"] != starting_sets, "Set incompleto")
+        result = [str(value) for value in state["game_result"]]
+        if tiebreak_played:
+            result = [f"{game}.{point}" for game, point in zip(result, state["tiebreak_result"])]
+        final_scores[set_data["number"]] = result
+
+    require(max(state["sets"]) == sets_to_win, "Match incompleto")
+    check_final_scores(match, final_scores)
+    require(split_score(match.get("event_final_result"), True) == state["sets"],
+            "Risultato finale non coerente")
+    require(get_player(match.get("event_winner")) == state["sets"].index(max(state["sets"])),
+            "Vincitore del match non coerente")
+    return points

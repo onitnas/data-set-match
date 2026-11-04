@@ -77,8 +77,9 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   │   │   └── 2026/
 │   │   ├── players/          # Profili e ranking dei giocatori
 │   │   └── processed/        # Parquet di train, validation e test
+│   │       └── player_history.json # Conteggi cumulativi esportati per lo streaming
 │   ├── artifacts/            # Artefatti locali, esclusi da Git
-│   │   └── model/            # Pipeline addestrata, schema e report di training
+│   │   └── model/            # Pipeline addestrata e schema delle feature
 │   ├── Dockerfile            # Ambiente Spark ML
 │   ├── requirements.txt      # Dipendenze per raccolta e preparazione
 │   └── README.md             # Documentazione della fase ML
@@ -87,6 +88,16 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   ├── pipeline/
 │   │   └── logstash.conf     # Filtri, normalizzazione e output Kafka
 │   └── README.md             # Configurazione e verifica manuale
+├── streaming/                # Elaborazione continua degli eventi Kafka
+│   ├── Dockerfile            # Ambiente Spark Structured Streaming
+│   ├── stream_matches.py     # Lettura Kafka e decodifica degli aggiornamenti
+│   ├── match_state.py        # Validazione del punteggio ricevuto dall'API
+│   ├── match_state_store.py  # Cache previsioni e recupero dell'ultimo batch
+│   ├── player_history.py     # Statistiche storiche disponibili prima del match
+│   ├── match_features.py     # Costruzione delle 21 feature del modello
+│   ├── predict_matches.py    # Inferenza sul micro-batch e output in console
+│   ├── test_streaming.py     # Test di stato, modello e lettura Kafka
+│   └── README.md             # Avvio e verifica manuale
 ├── docker-compose.yml        # Ambiente containerizzato
 ├── LICENSE
 └── README.md

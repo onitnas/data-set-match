@@ -2,7 +2,6 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
 from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +12,8 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClass
 from pyspark.ml.feature import OneHotEncoder, StringIndexer, VectorAssembler
 from pyspark.ml.functions import array_to_vector, vector_to_array
 from pyspark.sql import SparkSession, functions as F
+
+from training.tennis_rules import PLAYER_ORIENTATION
 
 
 SEED = 42
@@ -73,7 +74,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Modello del vincitore del match: training 2024, validation 2025")
     parser.add_argument("--data-dir", type=Path, default=Path("training/data/processed"))
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--max-depth", type=int)
+    parser.add_argument("--max-iter", type=int)
+    parser.add_argument("--step-size", type=float)
     arguments = parser.parse_args()
+    fixed_parameters = [arguments.max_depth, arguments.max_iter, arguments.step_size]
+    if any(value is not None for value in fixed_parameters) and not all(value is not None for value in fixed_parameters):
+        parser.error("Specificare insieme --max-depth, --max-iter e --step-size")
+    parameter_grid = ({"maxDepth": [arguments.max_depth], "maxIter": [arguments.max_iter],
+                       "stepSize": [arguments.step_size]} if arguments.max_depth is not None else PARAMETER_GRID)
     data_dir = arguments.data_dir
 
     # 1. Lettura delle feature e controllo del modello, prima di avviare Spark.
@@ -84,11 +93,12 @@ if __name__ == "__main__":
         raise ValueError("Rigenerare i dataset: il target deve essere match_winner")
     if schema.get("dataset_stage") != "live":
         raise ValueError("Il dataset deve contenere gli stati live dell’incontro")
+    if schema.get("player_orientation") != PLAYER_ORIENTATION:
+        raise ValueError("Rigenerare i dataset con player_a = 0 e player_b = 1")
     output_dir = arguments.output_dir or Path("training/artifacts")
     model_dir = output_dir / "model"
     if model_dir.exists():
         if (not (model_dir / "pipeline").is_dir()
-                or not (model_dir / "training_report.json").is_file()
                 or not (model_dir / "schema.json").is_file()):
             raise ValueError(f"Modello incompleto in {model_dir}: scegliere una nuova directory di output")
         with (model_dir / "schema.json").open(encoding="utf-8") as file:
@@ -120,7 +130,6 @@ if __name__ == "__main__":
         training = training.withColumn("label", F.col("label").cast("double"))
         validation = validation.withColumn("label", F.col("label").cast("double"))
 
-        dataset_summaries = {}
         for name, dataset, year in [("train", training, 2024), ("validation", validation, 2025)]:
             invalid = (
                 F.col("match_date").isNull()
@@ -138,7 +147,6 @@ if __name__ == "__main__":
             ).first().asDict()
             if summary["classes"] != 2:
                 raise ValueError(f"Servono incontri di entrambe le classi nel dataset {name}")
-            dataset_summaries[name] = {"rows": summary["rows"], "matches": summary["matches"]}
             print(f"{name}: {summary['rows']} righe, {summary['matches']} incontri")
             invalid_matches = dataset.groupBy("match_id").agg(
                 F.countDistinct("label").alias("labels"), F.sum("sample_weight").alias("weight")
@@ -183,10 +191,9 @@ if __name__ == "__main__":
         print(f"Baseline sul 2025: {baseline_metrics}")
 
         # 6. Addestramento sul 2024 e confronto delle configurazioni sul 2025.
-        results = []
         best_result = None
         combinations = product(
-            PARAMETER_GRID["maxDepth"], PARAMETER_GRID["maxIter"], PARAMETER_GRID["stepSize"]
+            parameter_grid["maxDepth"], parameter_grid["maxIter"], parameter_grid["stepSize"]
         )
         for max_depth, max_iter, step_size in combinations:
             parameters = {"maxDepth": max_depth, "maxIter": max_iter, "stepSize": step_size}
@@ -204,18 +211,18 @@ if __name__ == "__main__":
             finally:
                 predictions.unpersist()
             result = {
-                "parameters": parameters, "validation_metrics": metrics,
-                "validation_match_start_metrics": start_metrics
+                "parameters": parameters, "validation_metrics": metrics
             }
-            results.append(result)
             if best_result is None or metrics["log_loss"] < best_result["validation_metrics"]["log_loss"]:
                 best_result = result
             print(f"Metriche sul 2025: {metrics}")
+            print(f"Metriche a inizio incontro: {start_metrics}")
 
         if best_result is None:
             raise ValueError("Nessuna configurazione di iperparametri disponibile")
         best_parameters = best_result["parameters"]
-        print(f"Configurazione scelta per Log Loss: {best_parameters}")
+        print(f"Iperparametri fissati: {best_parameters}" if arguments.max_depth is not None
+              else f"Configurazione scelta per Log Loss: {best_parameters}")
 
         # 7. Nuovo addestramento su 2024 + 2025, con i parametri scelti.
         classifier.setMaxDepth(best_parameters["maxDepth"])
@@ -226,48 +233,16 @@ if __name__ == "__main__":
         final_model = pipeline.fit(final_training)
         print("Addestramento completato.")
 
-        # 8. Report della selezione e salvataggio della pipeline finale.
-        report = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "spark_version": spark.version,
-            "seed": SEED,
-            "target": "match_winner",
-            "dataset_stage": schema["dataset_stage"],
-            "weighting": schema["weighting"],
-            "selection_training_year": 2024,
-            "validation_year": 2025,
-            "final_training_years": [2024, 2025],
-            "datasets": dataset_summaries,
-            "feature_columns": feature_columns,
-            "categorical_columns": categorical_columns,
-            "ranking": schema.get("ranking"),
-            "momentum": schema.get("momentum"),
-            "historical_features": schema.get("historical_features"),
-            "label_meaning": schema["label_meaning"],
-            "selection_metric": "log_loss",
-            "classification_threshold": 0.5,
-            "baseline_probability": baseline_probability,
-            "baseline_validation_metrics": baseline_metrics,
-            "ranking_baseline_validation": ranking_baseline,
-            "parameter_grid": PARAMETER_GRID,
-            "candidates": results,
-            "best_parameters": best_parameters,
-            "best_validation_metrics": best_result["validation_metrics"],
-            "best_validation_match_start_metrics": best_result["validation_match_start_metrics"]
-        }
-
         # Il percorso finale compare soltanto dopo il salvataggio completo.
-        print("Salvataggio del modello e del report...")
+        print("Salvataggio del modello...")
         output_dir.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=".training-", dir=output_dir) as temporary:
             staging = Path(temporary) / "model"
             staging.mkdir()
             final_model.write().save(str((staging / "pipeline").resolve()))
-            with (staging / "training_report.json").open("w", encoding="utf-8") as file:
-                json.dump(report, file, indent=2, ensure_ascii=False, allow_nan=False)
             with (staging / "schema.json").open("w", encoding="utf-8") as file:
                 json.dump(schema, file, indent=2)
             staging.rename(model_dir)
-        print(f"Modello finale e report salvati in {model_dir}")
+        print(f"Modello finale salvato in {model_dir}")
     finally:
         spark.stop()
