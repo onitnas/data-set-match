@@ -2,9 +2,9 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, BooleanType, IntegerType, StringType, StructField, StructType
+from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 
-from streaming.match_state import decode_live_state
+from streaming.predict_matches import LivePredictor
 
 
 POINT_SCHEMA = StructType([
@@ -31,11 +31,15 @@ SET_SCORE_SCHEMA = StructType([
 
 MATCH_SCHEMA = StructType([
     StructField("event_key", StringType()),
+    StructField("event_date", StringType()),
+    StructField("first_player_key", StringType()),
+    StructField("second_player_key", StringType()),
     StructField("event_first_player", StringType()),
     StructField("event_second_player", StringType()),
     StructField("tournament_key", StringType()),
     StructField("tournament_name", StringType()),
     StructField("event_status", StringType()),
+    StructField("event_type_type", StringType()),
     StructField("event_winner", StringType()),
     StructField("event_final_result", StringType()),
     StructField("event_game_result", StringType()),
@@ -50,31 +54,26 @@ EVENT_SCHEMA = StructType([
     StructField("_corrupt_record", StringType())
 ])
 
-STATE_SCHEMA = StructType([
-    StructField("state_ok", BooleanType()),
-    StructField("state_reason", StringType()),
-    StructField("is_finished", BooleanType())
-] + [StructField(name, IntegerType()) for name in [
-    "best_of", "server_index", "points_seen", "inferred_points",
-    "sets_1", "sets_2", "games_1", "games_2",
-    "regular_score_1", "regular_score_2", "is_tiebreak", "tiebreak_target",
-    "tiebreak_score_1", "tiebreak_score_2", "momentum_1", "momentum_2"
-]])
-
-
 if __name__ == "__main__":
     bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     topic = os.environ.get("KAFKA_TOPIC", "tennis-points")
     checkpoint = os.environ.get("SPARK_CHECKPOINT_LOCATION", "/app/checkpoints/kafka-reader")
 
     spark = (
-        SparkSession.builder.appName("TennisLiveKafkaReader")
+        SparkSession.builder.appName("TennisLiveMatchPrediction")
         .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
 
     try:
+        predictor = LivePredictor(
+            model_dir=os.environ.get("SPARK_MODEL_DIR", "/app/training/artifacts/model"),
+            history_path=os.environ.get("TENNIS_HISTORY_PATH", "/app/training/data/processed/player_history.json"),
+            players_dir=os.environ.get("TENNIS_PLAYERS_DIR", "/app/training/data/players"),
+            tournaments_path=os.environ.get("TENNIS_TOURNAMENTS_PATH", "/app/training/config/tournaments.json"),
+            history_dir=os.path.join(checkpoint, "player-history")
+        )
         print(f"Lettura del topic {topic} da {bootstrap_servers}", flush=True)
 
         # earliest si applica alla prima esecuzione; poi si riparte dal checkpoint.
@@ -94,63 +93,16 @@ if __name__ == "__main__":
 
         parsed = messages.withColumn(
             "data", F.from_json("payload", EVENT_SCHEMA, {"mode": "PERMISSIVE"})
-        ).withColumn(
-            "current_set_number",
-            F.regexp_extract("data.match.event_status", r"(?i)^Set\s+(\d+)", 1)
         )
-        # Durante il gioco scegliamo la voce scores del set indicato da event_status.
-        # Per stati come Finished mostriamo l'ultima voce ricevuta, con il suo numero.
-        set_score = F.when(
-            F.col("current_set_number") != "",
-            F.try_element_at(
-                F.filter("data.match.scores",
-                         lambda score: score["score_set"] == F.col("current_set_number")),
-                F.lit(-1)
-            )
-        ).otherwise(
-            F.try_element_at("data.match.scores", F.lit(-1))
-        )
-        # La UDF Python applica le regole del tennis a ciascuno snapshot completo.
-        reconstruct_state = F.udf(decode_live_state, STATE_SCHEMA)
-        parsed = parsed.withColumn("set_score", set_score).withColumn(
-            "state", reconstruct_state("data.match")
-        )
-        server = (
-            F.when(F.col("data.match.event_serve") == "First Player",
-                   F.col("data.match.event_first_player"))
-            .when(F.col("data.match.event_serve") == "Second Player",
-                  F.col("data.match.event_second_player"))
-            .otherwise(F.col("data.match.event_serve"))
-        )
-        readable_matches = parsed.select(
-            "match_id",
-            F.col("data.match.event_first_player").alias("player_1"),
-            F.col("data.match.event_second_player").alias("player_2"),
-            F.col("data.match.tournament_key").alias("tournament_id"),
-            F.col("data.match.tournament_name").alias("tournament"),
-            F.col("data.match.event_status").alias("status"),
-            F.col("data.match.event_final_result").alias("sets"),
-            F.col("set_score.score_set").alias("games_set"),
-            F.col("set_score.score_first").alias("games_1"),
-            F.col("set_score.score_second").alias("games_2"),
-            F.col("data.match.event_game_result").alias("point_score"),
-            server.alias("server"),
-            F.col("data.match.event_qualification").alias("qualification"),
-            (F.col("data._corrupt_record").isNull()
-             & F.col("data.match.event_key").isNotNull()).alias("parse_ok"),
-            "state.state_ok", "state.state_reason", "state.is_finished",
-            "state.points_seen", "state.inferred_points",
-            "state.momentum_1", "state.momentum_2",
-            "partition", "offset", "timestamp"
+        parsed = parsed.withColumn("parse_ok",
+            F.col("data._corrupt_record").isNull() & F.col("data.match.event_key").isNotNull()
         )
 
         query = (
-            readable_matches.writeStream.format("console")
-            .queryName("tennis-kafka-reader")
+            parsed.writeStream.foreachBatch(predictor.process_batch)
+            .queryName("tennis-live-predictions")
             .outputMode("append")
             .option("checkpointLocation", checkpoint)
-            .option("numRows", "10")
-            .option("truncate", "false")
             .trigger(processingTime="5 seconds")
             .start()
         )

@@ -3,16 +3,9 @@ from pathlib import Path
 
 
 FEATURE_COLUMNS = ["player_a_rank", "player_b_rank", "player_a_rank_missing", "player_b_rank_missing"]
-POLICY = {
-    "source": "API Tennis get_players stats, singles only",
-    "season": "match_year_minus_one",
-    "missing_value": 0,
-    "missing_indicators": ["player_a_rank_missing", "player_b_rank_missing"]
-}
-
 
 def load_rankings(profiles_dir):
-    paths = sorted(path for path in Path(profiles_dir).glob("*.json") if path.stem.isdecimal())
+    paths = sorted(path for path in Path(profiles_dir).glob("*.json"))
     if not paths:
         raise FileNotFoundError("Profili giocatori assenti: eseguire prima python -m training.fetch_players")
     rankings = {}

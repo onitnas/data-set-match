@@ -19,6 +19,12 @@ services:
     volumes:
       - ./streaming:/app/streaming:ro
       - ./training/tennis_rules.py:/app/training/tennis_rules.py:ro
+      - ./training/historical_features.py:/app/training/historical_features.py:ro
+      - ./training/player_rankings.py:/app/training/player_rankings.py:ro
+      - ./training/config:/app/training/config:ro
+      - ${TENNIS_DATASET_DIR:-./training/data/processed}/player_history.json:/app/training/data/processed/player_history.json:ro
+      - ./training/data/players:/app/training/data/players:ro
+      - ./training/artifacts/model:/app/training/artifacts/model:ro
       - streaming-checkpoints:/app/checkpoints
     depends_on:
       kafka-init:

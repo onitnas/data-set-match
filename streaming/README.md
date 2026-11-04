@@ -1,123 +1,201 @@
-# Decodifica e ricostruzione degli aggiornamenti live
+# Previsione live del vincitore del match
 
-`stream_matches.py` legge il topic configurato in `KAFKA_TOPIC`, interpreta
-il JSON e mostra le informazioni degli incontri in colonne separate.
-`match_state.py` ricostruisce lo stato dai punti e calcola il momentum,
-riutilizzando le funzioni di `training/tennis_rules.py`.
-Il modello e le feature storiche non sono ancora collegati.
+La pipeline è **WebSocket → Filebeat → Logstash → Kafka → Spark Structured
+Streaming → Spark ML → console**. Il servizio carica il Gradient Boosted Trees
+salvato in `training/artifacts/model/pipeline`, con **21 feature senza momentum**,
+e restituisce la probabilità di vittoria finale (`target=match_winner`).
+Il servizio non addestra il modello e non chiama API. Elasticsearch e Kibana
+sono il passaggio successivo.
 
-## Avvio
+## Flusso di un micro-batch
 
-Dalla radice del progetto:
+1. Spark legge Kafka e interpreta il JSON con uno schema esplicito.
+2. `foreachBatch` ordina gli eventi per partizione e offset e li legge una volta
+   nel driver con `toLocalIterator()`.
+3. Ogni snapshot viene validato autonomamente: set da `event_final_result`,
+   game da `scores`, punti da `event_game_result`, battitore da `event_serve`.
+4. Il driver costruisce le 21 feature unendo punteggio, superficie, ranking e
+   storico disponibile prima della giornata del match.
+5. Se le feature sono identiche all'ultimo input del match, riutilizza la
+   previsione. Gli input nuovi diventano un DataFrame passato a
+   `PipelineModel.transform()`. Non servono join o UDF Python.
+6. Cache e risultati del batch vengono salvati insieme. La console mostra
+   fino a dieci righe; tutte le righe vengono comunque elaborate.
+
+Il trigger richiede un batch ogni cinque secondi; l'elaborazione può richiedere
+più tempo. Spark gestisce sorgente, micro-batch, offset e inferenza ML. La logica
+applicativa rimane nel driver locale: non è uno stato distribuito e memoria e
+lavoro crescono con il carico. Gli eventi di un match devono continuare a usare
+la stessa chiave Kafka e partizione; non esiste un ordine globale degli offset
+fra partizioni.
+
+| Modulo | Responsabilità |
+| --- | --- |
+| `stream_matches.py` | Sessione Spark, schema JSON, Kafka e avvio della query. |
+| `predict_matches.py` | Coordinamento, confronto delle feature, inferenza e output. |
+| `match_state.py` | Validazione del punteggio corrente ricevuto dall'API. |
+| `match_state_store.py` | Cache delle previsioni e recupero dell'ultimo batch. |
+| `match_features.py` | Orientamento A/B e costruzione delle 21 feature. |
+| `player_history.py` | Conteggi storici e aggiornamenti dei match conclusi. |
+
+Dal training si riutilizzano `tennis_rules.py` e `player_rankings.py`, oltre
+agli artefatti e ai dati preparati. Dockerfile e Compose mantengono questi
+input in sola lettura; il volume dei checkpoint rimane scrivibile.
+
+## Cosa è cambiato senza momentum
+
+La previsione richiede il punteggio corrente, non la sequenza degli ultimi punti.
+Non si conservano ultimo vincitore di punto, serie consecutive, vecchi game o
+conteggi di punti live. Non si ricostruiscono punti mancanti per arrivare allo
+snapshot corrente e non occorre attendere che `pointbypoint` raggiunga il riepilogo.
+Un primo messaggio ricevuto a partita iniziata può già produrre una previsione.
+
+Restano i controlli su formato, set precedenti, game, vantaggi, tie-break e
+battitore. Uno snapshot incoerente ha probabilità `null` e un motivo esplicito.
+Una correzione successiva viene valutata normalmente, anche con lo stesso score.
+Gli incontri conclusi non producono nuove previsioni e rimuovono la propria cache.
+
+Se `event_serve` manca in un game regolare, il battitore può essere letto dal
+`player_served` dell'unico game aperto in `pointbypoint` con set e numero esatti.
+Non si usano game precedenti o conclusi. Nel tie-break questo recupero non è
+applicabile, perché il servizio cambia all'interno dello stesso game.
+
+`pointbypoint` rimane inoltre nello schema JSON perché i punti dei match
+conclusi servono a calcolare le statistiche storiche. Un risultato finale può
+quindi essere riconosciuto anche quando il suo dettaglio non permette di
+aggiornare lo storico: il mancato aggiornamento viene indicato nei log.
+La ricostruzione dei punti osservati/inferiti rimane necessaria nella
+preparazione offline e nei conteggi storici, non nell'inferenza dello score live.
+
+## Stato necessario e recupero
+
+Il checkpoint Spark conserva gli offset Kafka; non rende persistente una cache
+Python. `<checkpoint>/match_states.json`, formato versione 2, conserva soltanto:
+
+- ultimo ID del batch e relativi offset;
+- ultima lista delle 21 feature e previsione per ciascun match in cache;
+- output dell'ultimo batch, necessario per ripeterlo;
+- impronta della pipeline e del suo schema, per invalidare le vecchie previsioni.
+
+Ogni snapshot è autonomo: non si salva una seconda copia del punteggio o una
+sequenza dei punti. Il vecchio formato viene letto per recuperare batch e
+offset, ignorando i campi ormai inutili. La cache del modello precedente non
+viene riutilizzata perché l'impronta è diversa. Al primo batch completato si
+salva il formato nuovo.
+
+Gli aggiornamenti rimangono locali al batch fino al completamento dell'inferenza.
+Si scrive un file temporaneo e si sostituisce il JSON precedente. Un errore del
+modello lascia invariato il salvataggio precedente. Se il processo termina dopo
+il salvataggio applicativo e prima del commit degli offset Spark, il replay
+restituisce l'output già salvato senza ripetere l'inferenza. Offset diversi o
+batch precedenti vengono rifiutati.
+
+Il servizio usa un solo driver/query per quel checkpoint. La console può
+ristampare un batch ripetuto: non è un archivio con consegna esattamente una volta.
+Al riavvio Spark riprende dagli offset salvati; `startingOffsets=earliest` vale
+solo per un checkpoint nuovo. Non occorre eliminare il volume per riavviare.
+
+## Compatibilità e storico
+
+All'avvio si verificano target, fase `live`, ordine delle 21 feature e anno
+del prior storico contro `schema.json`. Schemi di dataset e modello sono alla
+versione 4; lo storico giocatori usa il formato 2 con `training_year` esplicito.
+
+- A è sempre il primo giocatore dell'API (indice 0), B il secondo (indice 1).
+  I modelli con un orientamento diverso vengono rifiutati: occorre rigenerare
+  dataset e modello.
+- `0/15/30/40/A` corrispondono a `0/1/2/3/4`; nel tie-break si usano conteggi dedicati.
+- La superficie viene da `training/config/tournaments.json`; il formato segue
+  `training/tennis_rules.py`: 5 set per gli Slam, 3 per gli altri tornei configurati.
+- Il ranking è quello della stagione precedente; assente significa `0` con flag missing `1`.
+- Lo storico consulta solo giorni precedenti (`previous_calendar_days_only`).
+  Il prior globale cresce nel 2024 e poi resta congelato; serve ai giocatori senza storico.
+
+`player_history.json` contiene i cumulativi esportati offline. Lo streaming non
+monta né rilegge i raw. I nuovi incontri conclusi e decodificabili vengono
+salvati in `<checkpoint>/player-history/`: un replay non li conta due volte e
+una correzione sostituisce i conteggi. Sono consultabili dal giorno successivo.
+Gli ID già inclusi nella base offline vengono ignorati. Anche rileggendo vecchi
+eventi, date future non entrano nelle loro statistiche.
+
+Resta il filtro preesistente: il dataset offline richiede qualificazione
+esplicitamente falsa; il live esclude quella esplicitamente vera e marca il
+campo assente come `unknown`. `unknown` non certifica il tabellone principale.
+
+## Output
+
+L'output mostra identità A/B, punteggio `api_score`, set/game, probabilità,
+vincitore previsto, validità dello stato e posizione Kafka. Non contiene momentum.
+`probability[1]` è la probabilità di vittoria di A; quella di B è il complemento.
+
+| `prediction_status` | Significato |
+| --- | --- |
+| `predicted` | Input utilizzabile diverso dall'ultimo input del match. |
+| `unchanged` | Le 21 feature sono uguali: previsione riutilizzata. |
+| `invalid_state` | Punteggio, battitore o campi necessari non utilizzabili. |
+| `finished` | Match concluso: nessuna nuova previsione. |
+| `excluded` | Tipo incontro, torneo o qualificazione esclusi. |
+| `invalid` | JSON o identificativi non validi. |
+
+Un input diverso può produrre la stessa probabilità: la deduplicazione confronta
+le feature, non il valore della previsione. `parse_ok` riguarda il JSON;
+`state_ok` il punteggio; `state_source=api_score` indica la fonte dello stato.
+Le righe senza previsione hanno `skip_reason` e probabilità `null`.
+
+## Avvio e regressione
+
+Dalla radice, se manca lo storico esportato:
 
 ```bash
-docker compose up --build -d spark-streaming
+.venv/bin/python -m training.prepare_dataset --history-only
+```
+
+Avvio:
+
+```bash
+docker compose up --build -d filebeat spark-streaming
 docker compose logs -f spark-streaming
 ```
 
-## Cosa vedere nei log
-
-Spark esegue la query in micro-batch, con intervallo richiesto di cinque
-secondi. L'intervallo non garantisce che un batch termini entro cinque secondi.
-Quando ci sono dati, il terminale mostra una tabella con:
-
-- `match_id`: la chiave Kafka convertita in stringa.
-- `player_1` e `player_2`: i giocatori nell'ordine del provider.
-- `tournament_id` e `tournament`: identificativo e nome del torneo.
-- `status`: stato dell'incontro, per esempio `Set 1` o `Finished`.
-- `sets`: risultato in set fornito da `event_final_result`.
-- `games_set`: numero del set a cui si riferiscono i game mostrati.
-- `games_1` e `games_2`: game dei due giocatori, letti da `scores`.
-- `point_score`: punteggio del game corrente, da `event_game_result`.
-- `server`: nome del giocatore al servizio; se il valore del provider non è
-  riconosciuto, viene mostrato il valore originale.
-- `qualification`: indicatore di qualificazione del provider.
-- `parse_ok`: il JSON è stato interpretato senza errori e contiene
-  `match.event_key`. Non verifica ancora la coerenza del punteggio.
-- `state_ok`: la sequenza dei punti è valida e raggiunge il punteggio live;
-  per i match terminati viene verificato il risultato completo.
-- `state_reason`: motivo per cui non è possibile ricostruire lo stato.
-- `is_finished`: incontro concluso e validato, da escludere dalle previsioni live.
-- `points_seen`: punti ricostruiti, comprese le chiusure dei game inferite.
-- `inferred_points`: quanti punti conclusivi sono stati ricostruiti.
-- `momentum_1` e `momentum_2`: punti consecutivi vinti dai giocatori.
-- `partition` e `offset`: identificano la posizione del messaggio nel topic.
-- `timestamp`: il timestamp Kafka del messaggio.
-
-`from_json` usa uno schema esplicito annidato: l'oggetto `match` contiene i
-campi dell'API, compresi `scores` e `pointbypoint`. I campi non inclusi nello
-schema, come `statistics`, restano nel payload originale.
-Gli identificativi vengono letti come testo, accettando le rappresentazioni
-numeriche e testuali presenti nei messaggi.
-
-`scores` viene letto come array di oggetti con `score_set`, `score_first` e
-`score_second`. Quando `status` indica `Set N`, viene selezionato il punteggio
-di quel set, indipendentemente dall'ordine dell'array. Per altri stati, come
-`Finished`, viene mostrata l'ultima voce ricevuta insieme al suo `games_set`.
-Se il set richiesto manca o l'array è vuoto, i game rimangono `null`:
-non vengono sostituiti con il punteggio del set precedente o con zeri inventati.
-
-## Ricostruzione dei punti e momentum
-
-Spark applica `decode_live_state` a ogni messaggio tramite una
-[UDF Python](https://spark.apache.org/docs/4.2.0/api/python/reference/pyspark.sql/api/pyspark.sql.functions.udf.html),
-cioè una funzione Python richiamata sulle righe del DataFrame.
-Le regole del training controllano i set già conclusi e i game completati.
-Per il game corrente si leggono soltanto i punti disponibili; il tie-break
-aperto viene controllato anche nell'alternanza dei servizi.
-Il punto conclusivo di un game viene inferito solo quando il vincitore è
-presente e il punteggio permette di ricostruirlo senza ambiguità, come nel training.
-
-Il momentum parte da zero all'inizio del match. Dopo ogni punto aumenta quello
-del vincitore e si azzera quello dell'avversario; continua attraverso i cambi
-di game e di set. Lo stato restituito è successivo ai punti ricevuti e quindi
-precedente al prossimo punto. Nei match conclusi comprende anche l'ultimo punto,
-ma non deve essere usato per una nuova previsione.
-
-Ogni messaggio deve contenere lo storico `pointbypoint` dall'inizio dell'incontro.
-Il calcolo riparte da quello storico per ogni snapshot: non esiste un contatore
-Python condiviso fra i match o fra i batch. Ripetere un messaggio restituisce
-gli stessi conteggi; una correzione viene ricalcolata dalla sequenza ricevuta.
-Questo richiede lavoro proporzionale alla lunghezza dello storico per ogni
-aggiornamento. Non elimina i messaggi duplicati dalla console e non conserva
-uno stato del match fra gli aggiornamenti.
-
-Se mancano punti o ci sono salti non ricostruibili, `state_ok=false` e i conteggi
-rimangono `null`. Lo stesso accade se `pointbypoint` è in ritardo rispetto a
-set, game, punti o battitore del riepilogo live: non si associa un momentum
-vecchio a un punteggio più recente. `state_reason` distingue questi casi.
-Un aggiornamento successivo può diventare valido quando il provider completa
-o corregge i dati. Gli stati diversi da `Set N` e `Finished` e le qualificazioni
-Slam non sono ancora supportati; il record rimane visibile con il motivo.
-
-Le colonne del punteggio mostrate in console continuano a provenire dal
-riepilogo dell'API anche quando `state_ok=false`. La colonna `state`, interna
-al DataFrame, contiene invece i conteggi numerici validati da utilizzare
-nel prossimo passaggio di costruzione delle feature.
-
-La console mostra fino a dieci righe per batch senza abbreviare i campi.
-`player_1` e `player_2` non sono ancora l'orientamento A/B usato dal modello.
-
-Alla prima esecuzione `startingOffsets=earliest` legge anche i messaggi ancora
-conservati nel topic. Possono quindi apparire vecchi ID in notazione scientifica,
-pubblicati prima della normalizzazione in Logstash.
-
-Il checkpoint risiede nel volume Docker `streaming-checkpoints`. Al riavvio,
-Spark usa gli offset salvati nel checkpoint: `earliest` non causa ogni volta
-la rilettura del topic dall'inizio. Se non ci sono nuovi messaggi, la query
-rimane in attesa; il solo avvio non dimostra l'arrivo dei dati.
-
-## Applicare la modifica e verificare
-
-Per questa modifica occorre ricostruire l'immagine: il Dockerfile aggiunge il
-percorso Python e include le regole condivise. Il Compose monta le regole
-anche in sola lettura, così gli aggiornamenti successivi rimangono disponibili.
+Fermare Spark prima di modificare sorgenti montati o sostituire il modello;
+riavviarlo dopo mantenendo il checkpoint. Il processo carica la pipeline una
+volta all'avvio.
 
 ```bash
-docker compose up --build -d spark-streaming
-docker compose logs --since 1m -f spark-streaming
+docker compose stop spark-streaming
+# Applicare le modifiche, poi:
+docker compose up -d spark-streaming
 ```
 
-Con dati validi, solo uno dei due momentum può essere maggiore di zero.
-All'inizio entrambi possono essere zero. Un nuovo punto dello stesso giocatore
-allunga la sequenza; un punto dell'altro giocatore la fa ripartire da uno.
+Test con libreria standard:
+
+```bash
+python -m unittest streaming.test_streaming.MatchStateTests -v
+```
+
+Suite con modello e Kafka reali, con Spark già avviato:
+
+```bash
+docker compose exec -T -e TENNIS_SPARK_TESTS=1 -e TENNIS_KAFKA_TESTS=1 spark-streaming \
+  spark-submit --master 'local[1]' --driver-memory 512m \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 streaming/test_streaming.py
+```
+
+La suite usa directory temporanee, non pubblica messaggi e non modifica il
+modello o il checkpoint principale. Il test Kafka richiede un topic con dati
+utili di più incontri. Senza i flag relativi, i test Spark/Kafka vengono saltati.
+
+La suite verifica 286 snapshot con vantaggi, cambi game/set e tie-break
+7/10, assenza di pointbypoint, snapshot incoerenti e correttivi, ranking mancanti,
+limite temporale dello storico, deduplicazione, errori dell'inferenza, riavvio,
+replay e vecchio formato dei salvataggi. Verifica inoltre che lo storico
+esportato dal training produca gli stessi tassi nel live e che A/B mantengano
+l'ordine dell'API indipendentemente dal battitore.
+
+Nella verifica del 4 novembre 2026 sono passati tutti i 20 test; Kafka ha fornito 419
+eventi reali e la query è ripartita dal checkpoint temporaneo senza rileggere
+gli offset già elaborati. Il servizio principale conserva il proprio checkpoint.
+
+Durante la prova live il modello ha prodotto probabilità per Bellucci–Rinderknech
+e Halys–Tiafoe; gli aggiornamenti con feature identiche hanno riutilizzato la
+previsione (`unchanged`). Il modello installato usa lo schema 4 e lo storico 2.
