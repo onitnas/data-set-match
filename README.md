@@ -99,6 +99,7 @@ La struttura verrà popolata progressivamente durante lo sviluppo:
 │   └── README.md             # Avvio e verifica manuale
 ├── visualization/            # Persistenza dei risultati e visualizzazione
 │   ├── tennis-predictions-template.json # Mapping dell'indice Elasticsearch
+│   ├── tennis-dashboard.ndjson # Dashboard Kibana e vista dati esportate
 │   └── README.md             # Configurazione e verifica dei risultati
 ├── docker-compose.yml        # Ambiente containerizzato
 ├── LICENSE

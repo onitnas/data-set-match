@@ -54,6 +54,41 @@ services:
       retries: 12
       start_period: 30s
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.5
+    environment:
+      SERVER_NAME: kibana
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 60s
+
+  kibana-init:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
+    depends_on:
+      kibana:
+        condition: service_healthy
+    volumes:
+      - ./visualization/tennis-dashboard.ndjson:/tmp/tennis-dashboard.ndjson:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        curl -fsS --max-time 60 -X POST 'http://kibana:5601/api/saved_objects/_import?overwrite=true' \
+          -H 'kbn-xsrf: true' --form file=@/tmp/tennis-dashboard.ndjson \
+          -o /tmp/kibana-import.json
+        cat /tmp/kibana-import.json
+        grep -Eq '"success"[[:space:]]*:[[:space:]]*true' /tmp/kibana-import.json
+    restart: "no"
+
   kafka:
     image: apache/kafka:4.4.0
     environment:
