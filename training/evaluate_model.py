@@ -7,7 +7,22 @@ from pyspark.ml.functions import array_to_vector
 from pyspark.sql import SparkSession, functions as F
 
 from training.tennis_rules import PLAYER_ORIENTATION
-from training.train_model import evaluate_match_start, evaluate_predictions, evaluate_ranking_baseline
+from training.train_model import evaluate_match_start, evaluate_predictions
+
+
+def evaluate_ranking_baseline(dataset):
+    """Confronta il vincitore reale con il giocatore dal ranking migliore."""
+    dataset = dataset.filter(F.col("point_index") == 1)
+    known = (
+        (F.col("player_a_rank_missing") == 0) & (F.col("player_b_rank_missing") == 0)
+        & (F.col("player_a_rank") != F.col("player_b_rank"))
+    )
+    correct = ((F.col("player_a_rank") < F.col("player_b_rank")).cast("double") == F.col("label"))
+    result = dataset.agg(
+        F.count("*").alias("matches"), F.sum(known.cast("int")).alias("covered_matches"),
+        F.avg(F.when(known, correct.cast("double"))).alias("accuracy")
+    ).first().asDict()
+    return result
 
 
 if __name__ == "__main__":

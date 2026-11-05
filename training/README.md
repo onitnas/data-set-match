@@ -144,23 +144,33 @@ Compose monta `training/data/processed` in sola lettura nel container e rende
 persistente `training/artifacts`. L'immagine contiene Python 3.13, Java e
 PySpark ML 4.2.0. Spark gira in locale con due thread.
 
-Il training legge lo schema, codifica la superficie e costruisce
-`VectorAssembler → GBTClassifier`. Senza parametri espliciti prova otto
-combinazioni sul 2024: `maxDepth=[3,5]`, `maxIter=[20,60]`,
-`stepSize=[0.05,0.1]`, seed 42; sceglie la Log Loss minore sul 2025.
-Con `--max-depth`, `--max-iter` e `--step-size` verifica invece una sola
-configurazione fissata. In entrambi i casi riaddestra da zero su 2024 + 2025.
+Il training segue cinque passaggi: lettura dello schema e dei dati,
+preparazione delle feature, addestramento sul 2024 con valutazione sul 2025,
+riaddestramento su 2024 + 2025 e salvataggio.
+La pipeline è `StringIndexer → OneHotEncoder → VectorAssembler → GBTClassifier`;
+i primi due passaggi codificano `surface`.
+
+I percorsi `DATA_DIR` e `MODEL_DIR` e il seed `SEED = 42` si modificano
+all'inizio di `train_model.py`. Gli iperparametri sono fissati direttamente
+nel `GBTClassifier`: `maxDepth=3`, `maxIter=60`, `stepSize=0.1`.
+Non ci sono argomenti da terminale per il training.
 
 Il modello a 21 feature è stato adottato dopo un confronto sul 2025 con la
-versione a 23 feature. Usa parametri fissati: profondità 3, 60 iterazioni e
-passo 0,1. Le metriche e i parametri scelti vengono mostrati in console.
-Se il modello completo con lo stesso schema esiste già, il comando salta
-il training prima di avviare Spark. Per un nuovo addestramento:
+versione a 23 feature. La configurazione deriva dagli esperimenti precedenti
+sul 2025: lo script esegue un training sul 2024, mostra le quattro metriche
+sul 2025 anche a inizio incontro e riaddestra da zero su 2024 + 2025 con gli
+stessi parametri. Il test 2026 viene letto soltanto da `evaluate_model.py`.
+Se `MODEL_DIR` esiste già, lo script termina con un errore prima di avviare
+Spark. Per un nuovo esperimento scegliere, per esempio,
+`MODEL_DIR = Path("training/artifacts/run2/model")`, quindi ricostruire
+l'immagine per includere la configurazione modificata:
 
 ```bash
-docker compose run --build --rm spark-ml python -m training.train_model \
-  --output-dir training/artifacts/run2 --max-depth 3 --max-iter 60 --step-size 0.1
+docker compose run --build --rm spark-ml
 ```
+
+Il salvataggio è diretto: un'interruzione può lasciare una directory incompleta.
+Per un esperimento successivo scegliere un altro percorso.
 
 Per cambiare dataset usare `TENNIS_DATASET_DIR`; il percorso interno rimane
 `/app/training/data/processed`.
@@ -170,6 +180,9 @@ Per cambiare dataset usare `TENNIS_DATASET_DIR`; il percorso interno rimane
 ```bash
 docker compose run --rm spark-ml python -m training.evaluate_model
 ```
+
+Per valutare un esperimento salvato altrove, aggiungere per esempio
+`--model-dir training/artifacts/run2/model` al comando di valutazione.
 
 Carica il modello salvato, controlla lo schema e valuta il 2026 senza training.
 Mostra le metriche in console senza creare report su file. La baseline costante
@@ -201,5 +214,5 @@ sono alla versione 4; lo storico usa il formato 2. Il riaddestramento non usa il
 - `historical_features.py`: storico dei giocatori aggiornato a fine giornata.
 - `player_rankings.py`: ranking singles della stagione precedente.
 - `prepare_dataset.py`: dataset live, split annuali, schema e storico giocatori.
-- `train_model.py`: selezione sul 2025 e riaddestramento su 2024 + 2025.
+- `train_model.py`: GBT con parametri fissi, validazione sul 2025 e riaddestramento su 2024 + 2025.
 - `evaluate_model.py`: metriche finali del modello fissato sul 2026.
