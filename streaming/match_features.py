@@ -5,18 +5,31 @@ from datetime import date
 from streaming.player_history import canonical_id, historical_rates, qualification_status
 from training import tennis_rules as rules
 
-
 FEATURE_COLUMNS = [
-    "best_of", "surface", "player_a_serve_win_rate", "player_a_return_win_rate",
-    "player_b_serve_win_rate", "player_b_return_win_rate", "player_a_rank", "player_b_rank",
-    "player_a_rank_missing", "player_b_rank_missing", "sets_a", "sets_b", "games_a", "games_b",
-    "regular_score_a", "regular_score_b", "is_tiebreak", "tiebreak_target",
-    "tiebreak_score_a", "tiebreak_score_b", "player_a_is_serving"
+    "best_of", 
+    "surface", 
+    "player_a_serve_win_rate", 
+    "player_a_return_win_rate",
+    "player_b_serve_win_rate", 
+    "player_b_return_win_rate", 
+    "player_a_rank", 
+    "player_b_rank",
+    "player_a_rank_missing", 
+    "player_b_rank_missing", 
+    "sets_a", 
+    "sets_b", 
+    "games_a", 
+    "games_b",
+    "regular_score_a", 
+    "regular_score_b", 
+    "is_tiebreak", 
+    "tiebreak_target",
+    "tiebreak_score_a", 
+    "tiebreak_score_b", 
+    "player_a_is_serving"
 ]
 
-
 def api_score(match, player_a):
-    """Punteggio ricevuto, visibile anche quando il dettaglio non è utilizzabile."""
     sets = str(match.get("event_final_result", "")).split("-")
     points = str(match.get("event_game_result", "")).split("-")
     current_set = str(match.get("event_status", "")).removeprefix("Set ")

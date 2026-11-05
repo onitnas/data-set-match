@@ -1,11 +1,12 @@
 # Previsione live del vincitore del match
 
 La pipeline è **WebSocket → Filebeat → Logstash → Kafka → Spark Structured
-Streaming → Spark ML → console**. Il servizio carica il Gradient Boosted Trees
+Streaming → Spark ML → Elasticsearch**. La console mostra
+anche le previsioni. Il servizio carica il Gradient Boosted Trees
 salvato in `training/artifacts/model/pipeline`, con **21 feature senza momentum**,
 e restituisce la probabilità di vittoria finale (`target=match_winner`).
-Il servizio non addestra il modello e non chiama API. Elasticsearch e Kibana
-sono il passaggio successivo.
+Il servizio non addestra il modello e non chiama l'API Tennis. Scrive i risultati
+con il connettore Elasticsearch per Spark; Kibana è il passaggio successivo.
 
 ## Flusso di un micro-batch
 
@@ -21,6 +22,9 @@ sono il passaggio successivo.
    `PipelineModel.transform()`. Non servono join o UDF Python.
 6. Cache e risultati del batch vengono salvati insieme. La console mostra
    fino a dieci righe; tutte le righe vengono comunque elaborate.
+7. `write_predictions()` aggiunge ID e metadati al DataFrame e lo scrive
+   direttamente su Elasticsearch con `.write.format("es")`. La scrittura
+   deve riuscire prima che Spark confermi gli offset di ingresso.
 
 Il trigger richiede un batch ogni cinque secondi; l'elaborazione può richiedere
 più tempo. Spark gestisce sorgente, micro-batch, offset e inferenza ML. La logica
@@ -31,7 +35,7 @@ fra partizioni.
 
 | Modulo | Responsabilità |
 | --- | --- |
-| `stream_matches.py` | Sessione Spark, schema JSON, Kafka e avvio della query. |
+| `stream_matches.py` | Sessione Spark, lettura Kafka, scrittura Elasticsearch e avvio della query. |
 | `predict_matches.py` | Coordinamento, confronto delle feature, inferenza e output. |
 | `match_state.py` | Validazione del punteggio corrente ricevuto dall'API. |
 | `match_state_store.py` | Cache delle previsioni e recupero dell'ultimo batch. |
@@ -94,6 +98,58 @@ Il servizio usa un solo driver/query per quel checkpoint. La console può
 ristampare un batch ripetuto: non è un archivio con consegna esattamente una volta.
 Al riavvio Spark riprende dagli offset salvati; `startingOffsets=earliest` vale
 solo per un checkpoint nuovo. Non occorre eliminare il volume per riavviare.
+
+## Scrittura diretta su Elasticsearch
+
+Spark 4.2.0 usa il connettore `elasticsearch-spark-41_2.13:9.6.0-SNAPSHOT`,
+scaricato dal repository ufficiale Elastic durante la build Docker e caricato
+con `--jars`. Elasticsearch rimane alla versione 9.5.5. Il connettore è una
+build di sviluppo: la versione 9.5.5 dell'artefatto `spark-41` non è pubblicata
+nei repository verificati. Il JAR `spark-30` è destinato a Spark 3 e non va
+aggiunto a questa immagine.
+
+Il JAR è incluso nell'immagine costruita; una nuova build può scaricare uno
+snapshot aggiornato. Le prove sul connettore vanno ripetute se cambia il JAR.
+Il modello salvato non viene riaddestrato per questo collegamento.
+
+Compose avvia Elasticsearch come cluster di un solo nodo (`es01`), con volume
+persistente e porta pubblicata su `127.0.0.1:9200`. Per questo ambiente locale
+l'autenticazione è disattivata. `elasticsearch-init` installa il template
+`visualization/tennis-predictions-template.json`, poi termina; Spark aspetta
+il completamento di questo servizio prima di partire.
+
+La sessione Spark configura `es.nodes`, `es.port` e `es.nodes.wan.only`.
+Il DataFrame restituito da `LivePredictor.process_batch()` viene scritto
+nell'indice `ELASTICSEARCH_INDEX` (default `tennis-predictions`) tramite il
+connettore, usando `mode("append")` e `es.mapping.id=document_id`.
+Le operazioni restano dentro `foreachBatch` perché le feature e la cache
+vengono preparate per ogni micro-batch. Il professore usa `writeStream` su
+un DataFrame streaming già pronto; entrambi usano il connettore nativo `es`.
+
+Ogni aggiornamento diventa un documento, inclusi `unchanged`, stati non
+utilizzabili e match conclusi. Il documento contiene topic, partizione e
+offset dell'evento Kafka originale, ID del batch e impronta del modello.
+`timestamp` è l'orario Kafka in UTC, non l'orario certificato del punto.
+`document_id=topic:partizione:offset` permette al connettore di sovrascrivere
+lo stesso documento se un batch viene ripetuto. I campi null sono conservati.
+
+Una scrittura fallita interrompe la query senza confermare gli offset Spark.
+Al riavvio il checkpoint e la cache recuperano il batch; gli ID stabili evitano
+duplicati anche quando una parte dei documenti era già stata salvata.
+Il checkpoint esistente viene mantenuto: non si rilegge automaticamente tutto
+il topic e i documenti già salvati restano nell'indice.
+
+Il template configura i nuovi indici con uno shard e zero repliche, oltre ai
+tipi espliciti: probabilità numeriche, nomi e ID `keyword`, timestamp `date`.
+Il template non modifica il mapping degli indici già esistenti.
+
+```bash
+curl -s 'http://localhost:9200/_cluster/health?pretty'
+curl -s 'http://localhost:9200/tennis-predictions/_count?pretty'
+curl -s 'http://localhost:9200/tennis-predictions/_search?size=3&sort=timestamp:desc&pretty'
+```
+
+Altri dettagli e riferimenti sono in `visualization/README.md`.
 
 ## Compatibilità e storico
 
@@ -167,29 +223,11 @@ docker compose stop spark-streaming
 docker compose up -d spark-streaming
 ```
 
-Test con libreria standard:
-
-```bash
-python -m unittest streaming.test_streaming.MatchStateTests -v
-```
-
-Suite con modello e Kafka reali, con Spark già avviato:
-
-```bash
-docker compose exec -T -e TENNIS_SPARK_TESTS=1 -e TENNIS_KAFKA_TESTS=1 spark-streaming \
-  spark-submit --master 'local[1]' --driver-memory 512m \
-  --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 streaming/test_streaming.py
-```
-
-La suite usa directory temporanee, non pubblica messaggi e non modifica il
-modello o il checkpoint principale. Il test Kafka richiede un topic con dati
-utili di più incontri. Senza i flag relativi, i test Spark/Kafka vengono saltati.
-
-La suite verifica 286 snapshot con vantaggi, cambi game/set e tie-break
+Nelle verifiche del blocco streaming sono stati controllati 286 snapshot con vantaggi, cambi game/set e tie-break
 7/10, assenza di pointbypoint, snapshot incoerenti e correttivi, ranking mancanti,
 limite temporale dello storico, deduplicazione, errori dell'inferenza, riavvio,
-replay e vecchio formato dei salvataggi. Verifica inoltre che lo storico
-esportato dal training produca gli stessi tassi nel live e che A/B mantengano
+replay e vecchio formato dei salvataggi. Sono stati verificati inoltre lo storico
+esportato dal training, che produce gli stessi tassi nel live, e A/B, che mantengono
 l'ordine dell'API indipendentemente dal battitore.
 
 Nella verifica del 4 novembre 2026 sono passati tutti i 20 test; Kafka ha fornito 419
@@ -199,3 +237,6 @@ gli offset già elaborati. Il servizio principale conserva il proprio checkpoint
 Durante la prova live il modello ha prodotto probabilità per Bellucci–Rinderknech
 e Halys–Tiafoe; gli aggiornamenti con feature identiche hanno riutilizzato la
 previsione (`unchanged`). Il modello installato usa lo schema 4 e lo storico 2.
+
+La scrittura dei risultati usa il connettore Elasticsearch per Spark, senza
+writer HTTP Python e senza un secondo topic Kafka o una pipeline Logstash in uscita.

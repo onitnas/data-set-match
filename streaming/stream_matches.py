@@ -54,14 +54,36 @@ EVENT_SCHEMA = StructType([
     StructField("_corrupt_record", StringType())
 ])
 
+
+def write_predictions(predictions, batch_id, model_id, source_topic, elasticsearch_index):
+    documents = (
+        predictions.withColumn("document_id", F.concat_ws(":", F.lit(source_topic), "partition", "offset"))
+        .withColumn("kafka_topic", F.lit(source_topic))
+        .withColumn("batch_id", F.lit(batch_id).cast("long"))
+        .withColumn("model_id", F.lit(model_id))
+    )
+    (
+        documents.write.format("es")
+        .option("es.mapping.id", "document_id")
+        .option("es.spark.dataframe.write.null", "true")
+        .mode("append")
+        .save(elasticsearch_index)
+    )
+    print(f"Batch {batch_id}: previsioni salvate in {elasticsearch_index}", flush=True)
+
+
 if __name__ == "__main__":
     bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     topic = os.environ.get("KAFKA_TOPIC", "tennis-points")
+    elasticsearch_index = os.environ.get("ELASTICSEARCH_INDEX", "tennis-predictions")
     checkpoint = os.environ.get("SPARK_CHECKPOINT_LOCATION", "/app/checkpoints/kafka-reader")
 
     spark = (
         SparkSession.builder.appName("TennisLiveMatchPrediction")
         .config("spark.sql.shuffle.partitions", "4")
+        .config("es.nodes", os.environ.get("ELASTICSEARCH_NODES", "elasticsearch"))
+        .config("es.port", os.environ.get("ELASTICSEARCH_PORT", "9200"))
+        .config("es.nodes.wan.only", "true")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -98,8 +120,14 @@ if __name__ == "__main__":
             F.col("data._corrupt_record").isNull() & F.col("data.match.event_key").isNotNull()
         )
 
+        def process_batch(batch, batch_id):
+            predictions = predictor.process_batch(batch, batch_id)
+            if predictions is not None:
+                # Anche un replay dalla cache deve ripetere la scrittura su Elasticsearch.
+                write_predictions(predictions, batch_id, predictor.model_id, topic, elasticsearch_index)
+
         query = (
-            parsed.writeStream.foreachBatch(predictor.process_batch)
+            parsed.writeStream.foreachBatch(process_batch)
             .queryName("tennis-live-predictions")
             .outputMode("append")
             .option("checkpointLocation", checkpoint)

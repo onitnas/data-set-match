@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import timezone
 from pathlib import Path
 
 from pyspark.ml import PipelineModel
@@ -25,7 +26,7 @@ OUTPUT_COLUMNS = [
     "qualification_status", "sets_a", "sets_b", "games_a", "games_b",
     "player_a_win_probability",
     "player_b_win_probability", "predicted_winner", "parse_ok", "state_ok", "state_source",
-    "skip_reason", "partition", "offset"
+    "skip_reason", "partition", "offset", "timestamp"
 ]
 OUTPUT_SCHEMA = StructType([
     StructField(column, BooleanType() if column in ["parse_ok", "state_ok"] else
@@ -101,7 +102,8 @@ class LivePredictor:
             output.update(match_id=features.get("canonical_match_id", row["match_id"]),
                           status=(row["match"] or {}).get("event_status"), parse_ok=row["parse_ok"],
                           state_ok=state.get("state_ok"), state_source=state.get("state_source"),
-                          partition=row["partition"], offset=row["offset"])
+                          partition=row["partition"], offset=row["offset"],
+                          timestamp=row["timestamp"].astimezone(timezone.utc).isoformat())
             if features["prediction_status"] == "finished":
                 cache.pop(output["match_id"], None)
             reference = None
@@ -155,5 +157,9 @@ class LivePredictor:
         if not records:
             return
         output = self.process_records(records, batch_id, batch.sparkSession)
+        for row, source in zip(output, records):
+            row.setdefault("timestamp", source["timestamp"].astimezone(timezone.utc).isoformat())
         print(f"\nBatch: {batch_id}", flush=True)
-        batch.sparkSession.createDataFrame(output, OUTPUT_SCHEMA).show(10, truncate=False)
+        predictions = batch.sparkSession.createDataFrame(output, OUTPUT_SCHEMA)
+        predictions.show(10, truncate=False)
+        return predictions
