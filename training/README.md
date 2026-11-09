@@ -1,6 +1,6 @@
 # Probabilità live di vittoria del match
 
-Il modello operativo è un `GBTClassifier` Spark ML con 21 feature, senza momentum.
+Il modello operativo è un `GBTClassifier` Spark ML con 17 feature, senza momentum.
 `label = 1` indica la vittoria finale di A, `0` quella di B.
 A è sempre il primo giocatore dell'API (indice 0), B il secondo (indice 1),
 anche quando cambia il battitore. Tutti gli stati dello stesso match hanno
@@ -28,111 +28,49 @@ i profili già presenti:
 .venv/bin/python -m training.fetch_players
 ```
 
-`prepare_dataset.py` legge i raw, controlla duplicati e date, seleziona ATP
-Singles conclusi nei tabelloni principali dei tornei configurati e ricostruisce
-i punti con `tennis_rules.py`. Un incontro incoerente viene scartato interamente.
-
-`decode_match()` percorre set e game e controlla servizio e risultati del feed.
-`decode_game()` e `decode_tiebreak()` usano direttamente i punteggi intermedi
-forniti dall'API. `add_point()` salva le copie dello stato prima del punto
-e assegna `point_index`; poi il punteggio viene aggiornato con quello letto.
-`next_state()` gestisce il punto conclusivo del game o del tie-break e
-l'eventuale passaggio al set successivo. Restano i controlli sul formato,
-sulla numerazione senza buchi o duplicati, sul servizio e sui risultati finali.
-
-Il percorso di output predefinito è `training/data/processed`.
-`--input-dir` e `--players-dir` permettono di cambiare gli input.
-
-La preparazione salva anche `player_history.json`: conteggi cumulativi per
-giocatore e giornata, prior del 2024 e ID degli incontri già inclusi.
-Lo streaming carica questo file per costruire le feature storiche.
-Per aggiungerlo ai dataset già presenti, senza riscrivere Parquet, schema
-o modello, eseguire dalla radice:
+`prepare_dataset.py` legge gli incontri conclusi e usa direttamente i punteggi
+forniti dall'API, senza ricostruire punti mancanti:
 
 ```bash
-.venv/bin/python -m training.prepare_dataset --history-only
+.venv/bin/python -m training.prepare_dataset
 ```
 
-Il comando crea o sostituisce soltanto `player_history.json` nella directory
-di output. La preparazione completa continua a richiedere una nuova directory.
+Gli input sono `training/data/raw` e `training/data/players`; l'output è
+`training/data/processed`. La directory di output deve essere assente.
+Il 2024 va in `train.parquet`, il 2025 in `validation.parquet` e il 2026
+in `test.parquet`. `schema.json` descrive le colonne (versione 6).
 
-| Split | Anno | Incontri | Stati |
-| --- | --- | --- | --- |
-| Training | 2024 | 1.015 | 186.090 |
-| Validation | 2025 | 995 | 180.494 |
-| Test | 2026 | 928 | 164.313 |
+Ogni match include uno stato iniziale con `point_index = 0`, set, game e
+punti a zero e il primo battitore indicato dall'API. Le righe successive
+contengono il punteggio osservato dopo il punto. La valutazione a inizio
+incontro usa esclusivamente `point_index = 0`.
 
-Ogni riga è lo stato prima di un punto. Non viene incluso lo stato successivo
-alla conclusione del match. Tutti gli stati di un incontro appartengono allo
-stesso split.
+Un punto con score `None` viene saltato. Se manca il risultato di un game
+necessario, viene scartato il match; un eventuale game finale vuoto con
+score `None` viene ignorato. Gli stati con tie-break già concluso vengono
+esclusi: il risultato del set arriva dal riepilogo del game 13. Il conteggio
+dei set vinti deve coincidere con il risultato finale del match.
 
-Il punto conclusivo di un game viene inferito soltanto quando è ricostruibile
-legalmente con un unico punto; `is_inferred` lo segnala. I punteggi intermedi
-sono considerati autorevoli e non vengono ricalcolati per confrontarli con
-l'API. Se il punteggio salta pur mantenendo una numerazione continua, non
-vengono aggiunti i punti intermedi mancanti: i conteggi storici si basano sui
-record disponibili e sui punti conclusivi inferiti. Il decoder supporta i
-formati configurati 2023-2026: Masters al meglio dei tre set, Slam al meglio
-dei cinque, tie-break a 7 punti o a 10 nel quinto set degli Slam.
-
-La preparazione salva i Parquet, lo schema delle feature e lo storico giocatori.
-I conteggi e i motivi degli scarti vengono mostrati in console. La pubblicazione
-dell'output avviene dopo il completamento della preparazione.
-
-## Feature e metadati
-
-Le 21 feature sono:
+Le 17 feature sono:
 
 - `best_of`, `surface`.
-- `player_a_serve_win_rate`, `player_a_return_win_rate`,
-  `player_b_serve_win_rate`, `player_b_return_win_rate`.
-- `player_a_rank`, `player_b_rank`,
-  `player_a_rank_missing`, `player_b_rank_missing`.
+- `player_a_rank`, `player_b_rank`, `player_a_rank_missing`, `player_b_rank_missing`.
 - `sets_a`, `sets_b`, `games_a`, `games_b`.
 - `regular_score_a`, `regular_score_b`.
 - `is_tiebreak`, `tiebreak_target`, `tiebreak_score_a`, `tiebreak_score_b`.
 - `player_a_is_serving`.
 
-L'orientamento segue l'ordine dell'API: `player_a = 0`, `player_b = 1`.
-Gli ID e la data sono metadati; non entrano nelle feature.
+A è sempre il primo giocatore dell'API, B il secondo. ID, data e indice
+sono metadati. I ranking singles provengono dalla stagione precedente;
+un ranking assente vale zero con indicatore `rank_missing = 1`.
+La superficie proviene da `config/tournaments.json`. Il punteggio ordinario
+usa 0/1/2/3/4 per 0/15/30/40/vantaggio; il tie-break usa conteggi dedicati.
+Il battitore è quello dello stato corrente, quindi dopo un punto dispari
+del tie-break cambia rispetto a chi ha appena servito.
 
-Dataset e modelli preparati con il precedente orientamento tramite hash
-devono essere rigenerati in nuove directory di output. Cambiare soltanto
-`schema.json` non converte i dati o il modello. Il file `player_history.json`
-contiene conteggi per ID giocatore e non dipende dall'orientamento A/B.
-
-Verifica delle transizioni, dello stato e delle feature live:
-
-```bash
-.venv/bin/python -m unittest streaming.test_streaming.MatchStateTests -v
-```
-
-Lo storico di servizio e risposta usa soltanto gli incontri accettati dei
-giorni precedenti, inclusi i punti inferiti. Tutti i match di una giornata
-ricevono lo storico prima dell'aggiornamento con gli esiti del giorno.
-Lo storico resta costante durante un incontro.
-
-Senza storico personale si usa una media globale per ruolo, inizialmente
-0,5. Nel 2024 comprende solo i giorni già conclusi; dal 2025 resta fissata
-sul 2024. Gli storici personali continuano ad aggiornarsi a fine giornata
-anche nel 2025 e nel 2026, senza riaddestrare il modello.
-
-I ranking sono le statistiche `singles` della stagione precedente:
-2023 per incontri 2024, 2024 per 2025, 2025 per 2026. Sono un'approssimazione
-annuale, non ranking settimanali. Un ranking assente vale zero con indicatore
-`rank_missing = 1`.
-
-La superficie proviene da `config/tournaments.json` ed è codificata con
-`StringIndexer` e `OneHotEncoder`. Il punteggio ordinario usa 0/1/2/3/4
-per 0/15/30/40/vantaggio; nel tie-break si usano i conteggi dedicati.
-`player_a_is_serving` vale 1 quando serve A.
-
-Le feature non richiedono l'ordine degli ultimi punti. Nel live il riepilogo
-API fornisce lo stato corrente; la ricostruzione dei punti rimane nella
-preparazione offline e nell'aggiornamento delle statistiche dei match conclusi.
-
-Ogni riga pesa `1 / numero_di_stati_del_match`: ciascun incontro contribuisce
-con peso totale uno nel training e nelle metriche.
+Ogni riga pesa `1 / numero_di_stati_salvati_del_match`: ogni incontro
+contribuisce con peso totale uno, anche quando alcuni punti vengono saltati.
+Dataset e modello delle versioni precedenti devono essere rigenerati.
 
 ## Training con Docker
 
@@ -144,22 +82,25 @@ Compose monta `training/data/processed` in sola lettura nel container e rende
 persistente `training/artifacts`. L'immagine contiene Python 3.13, Java e
 PySpark ML 4.2.0. Spark gira in locale con due thread.
 
-Il training segue cinque passaggi: lettura dello schema e dei dati,
-preparazione delle feature, addestramento sul 2024 con valutazione sul 2025,
-riaddestramento su 2024 + 2025 e salvataggio.
+Il training addestra due candidati sul 2024: uno con gli iperparametri
+attuali e uno con i default di Spark. Mostra le quattro metriche sul 2025
+e sceglie la configurazione con log loss pesata minore. A parità mantiene
+quella attuale. Riaddestra poi da zero su 2024 + 2025 e salva il modello.
+Lo script segue la struttura lineare dell'esempio
+[`sentiment_analysis_model.py` di TAP2026](https://github.com/tapunict/tap2026/blob/main/spark/code/sentiment_analysis_model.py).
+Usa i Parquet prodotti da `prepare_dataset.py`; i controlli sui dati restano
+nella preparazione e le metriche in `evaluate_model.py`.
 La pipeline è `StringIndexer → OneHotEncoder → VectorAssembler → GBTClassifier`;
 i primi due passaggi codificano `surface`.
 
 I percorsi `DATA_DIR` e `MODEL_DIR` e il seed `SEED = 42` si modificano
-all'inizio di `train_model.py`. Gli iperparametri sono fissati direttamente
-nel `GBTClassifier`: `maxDepth=3`, `maxIter=60`, `stepSize=0.1`.
+all'inizio di `train_model.py`. Il candidato attuale usa
+`maxDepth=3`, `maxIter=60`, `stepSize=0.1`; l'altro lascia gli iperparametri
+ai default di `GBTClassifier`. Entrambi usano gli stessi pesi per match e seed.
 Non ci sono argomenti da terminale per il training.
 
-Il modello a 21 feature è stato adottato dopo un confronto sul 2025 con la
-versione a 23 feature. La configurazione deriva dagli esperimenti precedenti
-sul 2025: lo script esegue un training sul 2024, mostra le quattro metriche
-sul 2025 anche a inizio incontro e riaddestra da zero su 2024 + 2025 con gli
-stessi parametri. Il test 2026 viene letto soltanto da `evaluate_model.py`.
+La configurazione attuale deriva dagli esperimenti precedenti sul 2025.
+Il 2026 non entra nell'addestramento; `evaluate_model.py` ne calcola le metriche.
 Se `MODEL_DIR` esiste già, lo script termina con un errore prima di avviare
 Spark. Per un nuovo esperimento scegliere, per esempio,
 `MODEL_DIR = Path("training/artifacts/run2/model")`, quindi ricostruire
@@ -188,6 +129,9 @@ Carica il modello salvato, controlla lo schema e valuta il 2026 senza training.
 Mostra le metriche in console senza creare report su file. La baseline costante
 viene ricalcolata dal Parquet di training del 2024; quella di ranking usa il test.
 
+Questi risultati si riferiscono al precedente dataset con schema 4 e 21
+feature; non sono una valutazione del nuovo dataset con schema 6.
+
 | Metrica live | Validation 2025 | Test 2026 |
 | --- | --- | --- |
 | Accuracy | 76,35% | 77,99% |
@@ -210,9 +154,7 @@ sono alla versione 4; lo storico usa il formato 2. Il riaddestramento non usa il
 
 - `fetch_matches.py`: download degli incontri per torneo e anno.
 - `fetch_players.py`: download dei profili giocatori, riutilizzando quelli già salvati.
-- `tennis_rules.py`: ricostruzione e controllo dei punteggi.
-- `historical_features.py`: storico dei giocatori aggiornato a fine giornata.
 - `player_rankings.py`: ranking singles della stagione precedente.
-- `prepare_dataset.py`: dataset live, split annuali, schema e storico giocatori.
-- `train_model.py`: GBT con parametri fissi, validazione sul 2025 e riaddestramento su 2024 + 2025.
+- `prepare_dataset.py`: snapshot live, split annuali e schema.
+- `train_model.py`: confronto sul 2025 dei due GBT e riaddestramento su 2024 + 2025.
 - `evaluate_model.py`: metriche finali del modello fissato sul 2026.

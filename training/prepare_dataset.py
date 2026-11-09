@@ -1,219 +1,299 @@
-import argparse
 import json
-from datetime import date
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import pyarrow as pa
-import pyarrow.parquet as parquet
+import pyarrow.parquet as pq
 
-from training import historical_features, player_rankings, tennis_rules
+from training.player_rankings import load_rankings
 
 
-FEATURE_COLUMNS = ["best_of", "surface"] + historical_features.FEATURE_COLUMNS + player_rankings.FEATURE_COLUMNS + [
-    "sets_a", "sets_b", "games_a", "games_b", "regular_score_a", "regular_score_b",
-    "is_tiebreak", "tiebreak_target", "tiebreak_score_a", "tiebreak_score_b",
+GAME_POINTS = {"0": 0, "15": 1, "30": 2, "40": 3, "A": 4}
+BEST_OF_5 = {"1236", "2155", "2053", "1217"}
+
+FEATURE_COLUMNS = [
+    "best_of", "surface",
+    "player_a_rank", "player_b_rank",
+    "player_a_rank_missing", "player_b_rank_missing",
+    "sets_a", "sets_b",
+    "games_a", "games_b",
+    "regular_score_a", "regular_score_b",
+    "is_tiebreak", "tiebreak_target",
+    "tiebreak_score_a", "tiebreak_score_b",
     "player_a_is_serving"
 ]
-METADATA_COLUMNS = ["match_id", "match_date", "player_a_id", "player_b_id", "point_index", "is_inferred"]
-ORIENTATION = tennis_rules.PLAYER_ORIENTATION
+
+METADATA_COLUMNS = [
+    "match_id", "match_date",
+    "player_a_id", "player_b_id", "point_index"
+]
+
+PLAYER_ORIENTATION = "player_a_index = 0; player_b_index = 1; fixed_for_entire_match"
 
 
-class PrepareDataset:
-    def __init__(self, input_dir, output_dir, players_dir="training/data/players"):
-        self.input_dir = Path(input_dir)
-        self.output_dir = Path(output_dir)
-        self.split_years = {"train": 2024, "validation": 2025, "test": 2026}
-        self.rankings = player_rankings.load_rankings(players_dir)
-        with Path("training/config/tournaments.json").open(encoding="utf-8") as file:
-            self.tournaments = {str(item["tournament_key"]): item for item in json.load(file)}
+def score_values(score, tiebreak=False):
+    if score is None:
+        raise ValueError("Punteggio mancante")
+    a, b = [value.strip() for value in score.split("-")]
 
-    def read_matches(self):
-        matches = {}
-        source_years = {}
+    if tiebreak:
+        return [int(a), int(b)]
 
-        for year in self.split_years.values():
-            year_dir = self.input_dir / str(year)
-            if not year_dir.is_dir():
-                raise FileNotFoundError(f"Directory annuale mancante: {year_dir}")
+    return [GAME_POINTS[a], GAME_POINTS[b]]
 
-            for path in sorted(year_dir.glob("*.json")):
+
+def prepare_match(match, tournaments, rankings):
+    if match["event_status"] != "Finished":
+        return []
+
+    match_date = match["event_date"]
+    year = int(match_date[:4])
+
+    player_a = str(match["first_player_key"])
+    player_b = str(match["second_player_key"])
+
+    rank_a = rankings.get((player_a, year - 1), 0)
+    rank_b = rankings.get((player_b, year - 1), 0)
+
+    tournament_key = str(match["tournament_key"])
+    best_of = 5 if tournament_key in BEST_OF_5 else 3
+
+    label = 1 if match["event_winner"] == "First Player" else 0
+
+    common = {
+        "match_id": str(match["event_key"]),
+        "match_date": match_date,
+        "player_a_id": player_a,
+        "player_b_id": player_b,
+        "best_of": best_of,
+        "surface": tournaments[tournament_key],
+        "player_a_rank": rank_a,
+        "player_b_rank": rank_b,
+        "player_a_rank_missing": int(rank_a == 0),
+        "player_b_rank_missing": int(rank_b == 0),
+        "label": label
+    }
+
+    records = sorted(
+        match["pointbypoint"],
+        key=lambda record: (
+            int(record["set_number"].split()[1]),
+            "TieBreak" in record["set_number"],
+            int(record["number_game"])
+        )
+    )
+
+    # Il feed può aggiungere un game vuoto dopo la fine del match.
+    if records and records[-1]["score"] is None and not records[-1].get("points"):
+        records.pop()
+    if not records:
+        return []
+
+    rows = [{
+        **common,
+        "point_index": 0,
+        "sets_a": 0,
+        "sets_b": 0,
+        "games_a": 0,
+        "games_b": 0,
+        "regular_score_a": 0,
+        "regular_score_b": 0,
+        "is_tiebreak": 0,
+        "tiebreak_target": 0,
+        "tiebreak_score_a": 0,
+        "tiebreak_score_b": 0,
+        "player_a_is_serving": int(records[0]["player_served"] == "First Player")
+    }]
+    sets = [0, 0]
+    games = [0, 0]
+    current_set = 1
+    final_tiebreak_games = None
+
+    for record in records:
+        set_number = int(record["set_number"].split()[1])
+        is_tiebreak = "TieBreak" in record["set_number"]
+
+        # Quando cambia il set, aggiorniamo i set vinti.
+        if set_number != current_set:
+            if final_tiebreak_games is not None:
+                games = final_tiebreak_games
+
+            winner = 0 if games[0] > games[1] else 1
+            sets[winner] += 1
+
+            games = [0, 0]
+            final_tiebreak_games = None
+            current_set = set_number
+
+        # Il game 13 è il riepilogo finale del tie-break.
+        if not is_tiebreak and int(record["number_game"]) == 13:
+            final_tiebreak_games = score_values(record["score"], True)
+            continue
+
+        # Punti del tie-break.
+        if is_tiebreak:
+            point_records = [record]
+            tiebreak_target = 10 if best_of == 5 and sum(sets) == 4 else 7
+
+        # Punti dei game normali.
+        else:
+            point_records = sorted(
+                record["points"],
+                key=lambda point: int(point["number_point"])
+            )
+            tiebreak_target = 0
+
+        server = 0 if record["player_served"] == "First Player" else 1
+        # Dopo un punto dispari del tie-break cambia il battitore.
+        if is_tiebreak and int(record["number_game"]) % 2:
+            server = 1 - server
+
+        for point in point_records:
+            if point["score"] is None:
+                continue
+            score = score_values(point["score"], is_tiebreak)
+
+            # Il riepilogo del game 13 dà già il risultato del set.
+            if is_tiebreak and max(score) >= tiebreak_target and abs(score[0] - score[1]) >= 2:
+                continue
+
+            rows.append({
+                **common,
+                "point_index": len(rows),
+                "sets_a": sets[0],
+                "sets_b": sets[1],
+                "games_a": games[0],
+                "games_b": games[1],
+                "regular_score_a": 0 if is_tiebreak else score[0],
+                "regular_score_b": 0 if is_tiebreak else score[1],
+                "is_tiebreak": int(is_tiebreak),
+                "tiebreak_target": tiebreak_target,
+                "tiebreak_score_a": score[0] if is_tiebreak else 0,
+                "tiebreak_score_b": score[1] if is_tiebreak else 0,
+                "player_a_is_serving": int(server == 0)
+            })
+
+        # Il risultato del game è già presente nel JSON.
+        if not is_tiebreak:
+            games = score_values(record["score"], True)
+
+    if len(rows) == 1:
+        return []
+
+    # Ultimo set.
+    if final_tiebreak_games is not None:
+        games = final_tiebreak_games
+
+    winner = 0 if games[0] > games[1] else 1
+    sets[winner] += 1
+
+    # Unico controllo di coerenza sul risultato finale.
+    if sets != score_values(match["event_final_result"], True):
+        raise ValueError("Risultato finale non coerente")
+
+    # Ogni match ha peso complessivo pari a 1.
+    weight = 1.0 / len(rows)
+
+    for row in rows:
+        row["sample_weight"] = weight
+
+    return rows
+
+
+def main():
+    input_dir = Path("training/data/raw")
+    output_dir = Path("training/data/processed")
+
+    if output_dir.exists():
+        raise FileExistsError(
+            f"{output_dir} esiste già. "
+            "Rinominala o eliminala prima di rigenerare i dataset."
+        )
+
+    output_dir.mkdir(parents=True)
+
+    rankings = load_rankings("training/data/players")
+
+    with open("training/config/tournaments.json", encoding="utf-8") as file:
+        tournaments = {
+            str(item["tournament_key"]): item["tournament_surface"]
+            for item in json.load(file)
+        }
+
+    datasets = {
+        2024: "train",
+        2025: "validation",
+        2026: "test"
+    }
+
+    for year, name in datasets.items():
+        writer = None
+        total_matches = 0
+        total_points = 0
+        seen_matches = set()
+
+        try:
+            for path in sorted((input_dir / str(year)).glob("*.json")):
                 with path.open(encoding="utf-8") as file:
                     data = json.load(file)
 
-                if not isinstance(data, dict) or not isinstance(data.get("tournament"), list):
-                    raise ValueError(f"Formato JSON non valido: {path}")
-
                 for match in data["tournament"]:
-                    if not isinstance(match, dict) or match.get("event_key") is None:
-                        raise ValueError(f"Identificativo incontro mancante: {path}")
-
                     match_id = str(match["event_key"])
 
-                    if match_id in matches:
-                        if source_years[match_id] != year or matches[match_id] != match:
-                            raise ValueError(f"Versioni o annate diverse per l'incontro {match_id}")
+                    if match_id in seen_matches:
+                        continue
+                    seen_matches.add(match_id)
 
-                    matches[match_id] = match
-                    source_years[match_id] = year
+                    try:
+                        rows = prepare_match(match, tournaments, rankings)
+                    except (KeyError, ValueError, TypeError) as error:
+                        print(f"Match {match_id} scartato: {error}")
+                        continue
 
-        accepted = []
+                    if not rows:
+                        continue
 
-        for match_id, match in matches.items():
+                    if writer is None:
+                        table = pa.Table.from_pylist(rows)
+                        writer = pq.ParquetWriter(
+                            output_dir / f"{name}.parquet",
+                            table.schema,
+                            compression="snappy"
+                        )
+                    else:
+                        table = pa.Table.from_pylist(rows, schema=writer.schema)
 
-            tournament_key = str(match.get("tournament_key"))
+                    writer.write_table(table)
+                    
+                    total_matches += 1
+                    total_points += len(rows)
 
-            if match.get("event_status") != "Finished":
-                continue
+        finally:
+            if writer is not None:
+                writer.close()
 
-            match_date = date.fromisoformat(match["event_date"])
-
-            if match_date.year != source_years[match_id] or match_date.isoformat() != match["event_date"]:
-                raise ValueError(f"Data non coerente per l'incontro {match_id}")
-
-            if match_date.year not in tennis_rules.VALID_YEARS:
-                raise ValueError("Regole supportate soltanto per le annate 2023-2026")
-
-            try:
-                player_ids = [match["first_player_key"], match["second_player_key"]]
-
-                if None in player_ids or str(player_ids[0]) == str(player_ids[1]):
-                    raise ValueError("Identificativi giocatori mancanti o uguali")
-
-                player_ids = list(map(str, player_ids))
-
-                points = tennis_rules.decode_match(match)
-
-                winner = tennis_rules.get_player(match["event_winner"])
-
-            except (ValueError, KeyError, TypeError) as error:
-                print(f"Incontro {match_id} scartato: {error}")
-                continue
-
-            # A è sempre il primo giocatore dell'API, B il secondo.
-            player_a, player_b = 0, 1
-
-            features = {
-                "best_of": points[0]["best_of"],
-                "surface": self.tournaments[tournament_key]["tournament_surface"]
-            }
-
-            for role, index in [("a", player_a), ("b", player_b)]:
-                rank = self.rankings.get((player_ids[index], match_date.year - 1), 0)
-
-                features[f"player_{role}_rank"] = rank
-                features[f"player_{role}_rank_missing"] = int(rank == 0)
-
-            accepted.append({
-                "id": match_id, "date": match["event_date"], "tournament_key": tournament_key,
-                "player_ids": player_ids,
-                "label": int(winner == player_a), "points": points, "features": features
-            })
-        return sorted(accepted, key=lambda match: (match["date"], match["id"]))
-
-    def create_rows(self, match):
-        player_a, player_b = 0, 1
-        common = {
-            "match_id": match["id"], "match_date": match["date"],
-            "player_a_id": match["player_ids"][player_a],
-            "player_b_id": match["player_ids"][player_b],
-            **match["features"],
-            "label": match["label"]
-        }
-        live = []
-        for point in match["points"]:
-            is_tiebreak = point["tiebreak_target"] > 0
-            # Le feature sono lo stato PRIMA del punto, il target è sempre il match.
-            live.append({
-                **common,
-                "point_index": point["point_index"],
-                "is_inferred": point["is_inferred"],
-                "sets_a": point["sets"][player_a],
-                "sets_b": point["sets"][player_b],
-                "games_a": point["games"][player_a],
-                "games_b": point["games"][player_b],
-                "regular_score_a": 0 if is_tiebreak else point["score"][player_a],
-                "regular_score_b": 0 if is_tiebreak else point["score"][player_b],
-                "is_tiebreak": int(is_tiebreak),
-                "tiebreak_target": point["tiebreak_target"],
-                "tiebreak_score_a": point["score"][player_a] if is_tiebreak else 0,
-                "tiebreak_score_b": point["score"][player_b] if is_tiebreak else 0,
-                "player_a_is_serving": int(point["server"] == player_a),
-                "sample_weight": 1.0 / len(match["points"])
-            })
-        return live
-
-    def prepare_dataset(self, history_only=False):
-        if self.output_dir.exists() and not history_only:
-            raise FileExistsError(f"La directory {self.output_dir} esiste già: scegliere un nuovo --output-dir")
-
-        matches = self.read_matches()
-
-        if not matches:
-            raise ValueError("Nessun match accettato per preparare dataset e storico")
-
-        history_snapshot = historical_features.add_historical_features(
-            matches,
-            training_year=self.split_years["train"]
+        print(
+            f"{name} ({year}): "
+            f"{total_matches} match, {total_points} stati"
         )
 
-        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix=".dataset-", dir=self.output_dir.parent) as temporary:
-            staging = Path(temporary) / "processed"
-            staging.mkdir()
-            history_path = staging / "player_history.json"
+    schema = {
+        "target": "match_winner",
+        "dataset_stage": "live",
+        "schema_version": 6,
+        "feature_columns": FEATURE_COLUMNS,
+        "metadata_columns": METADATA_COLUMNS,
+        "target_columns": ["label"],
+        "weight_column": "sample_weight",
+        "categorical_columns": ["surface"],
+        "player_orientation": PLAYER_ORIENTATION,
+        "training_year": 2024
+    }
 
-            with history_path.open("w", encoding="utf-8") as file:
-                json.dump(history_snapshot, file, indent=2, ensure_ascii=False, allow_nan=False)
+    with (output_dir / "schema.json").open("w", encoding="utf-8") as file:
+        json.dump(schema, file, indent=2)
 
-            if history_only:
-                self.output_dir.mkdir(parents=True, exist_ok=True)
-                destination = self.output_dir / "player_history.json"
-                history_path.replace(destination)
-                print(f"Storico esportato: {len(matches)} incontri, "
-                      f"{len(history_snapshot['players'])} giocatori, file {destination}")
-                return
-
-            for split, year in self.split_years.items():
-                year_matches = [match for match in matches if int(match["date"][:4]) == year]
-                if not year_matches:
-                    raise ValueError(f"Nessun incontro valido per {split} ({year})")
-                live_rows = []
-
-                for match in year_matches:
-                    live_rows.extend(self.create_rows(match))
-
-                parquet.write_table(
-                    pa.Table.from_pylist(live_rows),
-                    staging / f"{split}.parquet",
-                    compression="snappy"
-                )
-
-                print(f"{split} ({year}): {len(year_matches)} incontri, {len(live_rows)} stati live")
-
-            schema = {
-                "target": "match_winner", "dataset_stage": "live", "schema_version": 4,
-                "feature_columns": FEATURE_COLUMNS,
-                "metadata_columns": METADATA_COLUMNS,
-                "target_columns": ["label"], "weight_column": "sample_weight",
-                "categorical_columns": ["surface"], "player_orientation": ORIENTATION,
-                "training_year": self.split_years["train"]
-            }
-
-            with (staging / "schema.json").open("w", encoding="utf-8") as file:
-                json.dump(schema, file, indent=2)
-            staging.rename(self.output_dir)
-        print(f"Dataset del vincitore del match salvati in {self.output_dir}")
+    print("Preparazione completata.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Dataset live per prevedere il vincitore dell'incontro")
-    parser.add_argument("--input-dir", default="training/data/raw")
-    parser.add_argument("--output-dir", default="training/data/processed")
-    parser.add_argument("--players-dir", default="training/data/players")
-    parser.add_argument("--history-only", action="store_true",
-                        help="Crea o aggiorna solo player_history.json, senza riscrivere i dataset")
-    arguments = parser.parse_args()
-    PrepareDataset(arguments.input_dir, arguments.output_dir, arguments.players_dir).prepare_dataset(
-        history_only=arguments.history_only
-    )
+    main()

@@ -6,7 +6,7 @@ from pyspark.ml import PipelineModel
 from pyspark.ml.functions import vector_to_array
 from pyspark.sql import SparkSession, functions as F
 
-from training.tennis_rules import PLAYER_ORIENTATION
+from training.prepare_dataset import PLAYER_ORIENTATION
 
 
 class MatchPredictor:

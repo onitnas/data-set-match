@@ -24,7 +24,6 @@ class FetchMatches:
         try:
             response = requests.get(url, params=params, timeout=60)
         except requests.RequestException:
-            # Gli errori requests possono contenere l'URL con la chiave API.
             raise RuntimeError(
                 f"Richiesta fallita per il torneo {keyTournament}"
             ) from None

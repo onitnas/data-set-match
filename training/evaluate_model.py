@@ -1,18 +1,48 @@
 import argparse
 import json
+import math
 from pathlib import Path
 
 from pyspark.ml import PipelineModel
-from pyspark.ml.functions import array_to_vector
+from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
+from pyspark.ml.functions import array_to_vector, vector_to_array
 from pyspark.sql import SparkSession, functions as F
 
-from training.tennis_rules import PLAYER_ORIENTATION
-from training.train_model import evaluate_match_start, evaluate_predictions
+from training.prepare_dataset import PLAYER_ORIENTATION
+
+
+def evaluate_predictions(predictions):
+    evaluator = MulticlassClassificationEvaluator(labelCol="label", weightCol="sample_weight")
+    probability = vector_to_array(F.col("probability"))[1]
+
+    brier_score = predictions.select(
+        (F.sum(F.col("sample_weight") * F.pow(probability - F.col("label"), 2))
+         / F.sum("sample_weight")).alias("brier_score")
+    ).first()["brier_score"]
+
+    metrics = {
+        "accuracy": evaluator.setMetricName("accuracy").evaluate(predictions),
+        "log_loss": evaluator.setMetricName("logLoss").evaluate(predictions),
+        "brier_score": brier_score,
+        "roc_auc": BinaryClassificationEvaluator(
+            labelCol="label", rawPredictionCol="probability", weightCol="sample_weight",
+            metricName="areaUnderROC"
+        ).evaluate(predictions)
+    }
+
+    if not all(math.isfinite(value) for value in metrics.values()):
+        raise ValueError("Metriche non valide: controllare dati e probabilità")
+    return metrics
+
+
+def evaluate_match_start(predictions):
+    start = predictions.filter(F.col("point_index") == 0).withColumn("sample_weight", F.lit(1.0))
+    return evaluate_predictions(start)
 
 
 def evaluate_ranking_baseline(dataset):
     """Confronta il vincitore reale con il giocatore dal ranking migliore."""
-    dataset = dataset.filter(F.col("point_index") == 1)
+    dataset = dataset.filter(F.col("point_index") == 0)
     known = (
         (F.col("player_a_rank_missing") == 0) & (F.col("player_b_rank_missing") == 0)
         & (F.col("player_a_rank") != F.col("player_b_rank"))

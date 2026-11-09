@@ -3,9 +3,11 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType
+from pyspark.ml import PipelineModel
+import json
+from pyspark.ml.functions import vector_to_array
 
-from streaming.predict_matches import LivePredictor
-
+from streaming.snapshot_features import build_snapshot_features
 
 POINT_SCHEMA = StructType([
     StructField("number_point", StringType()),
@@ -89,13 +91,48 @@ if __name__ == "__main__":
     spark.sparkContext.setLogLevel("WARN")
 
     try:
-        predictor = LivePredictor(
-            model_dir=os.environ.get("SPARK_MODEL_DIR", "/app/training/artifacts/model"),
-            history_path=os.environ.get("TENNIS_HISTORY_PATH", "/app/training/data/processed/player_history.json"),
-            players_dir=os.environ.get("TENNIS_PLAYERS_DIR", "/app/training/data/players"),
-            tournaments_path=os.environ.get("TENNIS_TOURNAMENTS_PATH", "/app/training/config/tournaments.json"),
-            history_dir=os.path.join(checkpoint, "player-history")
+        tournaments = (
+            spark.read
+            .option("multiLine", True)
+            .json("/app/training/config/tournaments.json")
+            .select(
+                F.col("tournament_key").cast("string").alias("config_tournament_key"),
+                F.col("tournament_surface").alias("surface")
+            )
         )
+        
+        players = (
+            spark.read
+            .option("multiLine", True)
+            .json("/app/training/data/players/*.json")
+        )
+
+        rankings = (
+            players
+            .withColumn("stat", F.explode("stats"))
+            .filter(F.col("stat.type") == "singles")
+            .select(
+                F.col("player_key").cast("string").alias("player_id"),
+                F.expr("try_cast(stat.season AS INT)").alias("season"),
+                F.expr("try_cast(stat.rank AS INT)").alias("rank")
+            )
+            .filter(F.col("rank") > 0)
+        )
+        
+        model_dir = os.environ.get(
+            "SPARK_MODEL_DIR",
+            "/app/training/artifacts/model"
+        )
+
+        with open(f"{model_dir}/schema.json", encoding="utf-8") as file:
+            schema = json.load(file)
+
+        if len(schema["feature_columns"]) != 17:
+            raise ValueError("Il modello deve avere 17 feature")
+
+        model = PipelineModel.load(f"{model_dir}/pipeline")
+
+        print("Modello caricato correttamente")
         print(f"Lettura del topic {topic} da {bootstrap_servers}", flush=True)
 
         # earliest si applica alla prima esecuzione; poi si riparte dal checkpoint.
@@ -121,14 +158,68 @@ if __name__ == "__main__":
         )
 
         def process_batch(batch, batch_id):
-            predictions = predictor.process_batch(batch, batch_id)
-            if predictions is not None:
-                # Anche un replay dalla cache deve ripetere la scrittura su Elasticsearch.
-                write_predictions(predictions, batch_id, predictor.model_id, topic, elasticsearch_index)
+
+            valid = batch.filter(
+                F.col("parse_ok") &
+                F.col("data.match.event_status").rlike(r"^Set [1-5]$") &
+                (
+                    F.lower(
+                        F.coalesce(
+                            F.col("data.match.event_qualification"),
+                            F.lit("false")
+                        )
+                    ) != "true"
+                )
+            )
+
+            features = build_snapshot_features(
+                valid,
+                tournaments,
+                rankings
+            )
+
+            features = features.dropna(
+                subset=schema["feature_columns"]
+            )
+
+            predictions = model.transform(features)
+
+            output = predictions.select(
+                "timestamp",
+                "match_id",
+                "player_a_is_serving",
+                F.col("data.match.event_first_player").alias("player_a"),
+                F.col("data.match.event_second_player").alias("player_b"),
+                "sets_a",
+                "sets_b",
+                "games_a",
+                "games_b",
+                "is_tiebreak",
+                "tiebreak_target",
+                "tiebreak_score_a",
+                "tiebreak_score_b",
+                "partition",
+                "offset",
+                vector_to_array("probability")[1].alias("player_a_win_probability"),
+                (1 - vector_to_array("probability")[1]).alias("player_b_win_probability"),
+                "api_score"
+            )
+
+            print(f"Batch {batch_id}", flush=True)
+            
+            write_predictions(
+                predictions=output,
+                batch_id=batch_id,
+                model_id=model.uid,
+                source_topic=topic,
+                elasticsearch_index=elasticsearch_index,
+            )
+            
+            output.show(20, truncate=False)
 
         query = (
             parsed.writeStream.foreachBatch(process_batch)
-            .queryName("tennis-live-predictions")
+            .queryName("data-set-match-predictions")
             .outputMode("append")
             .option("checkpointLocation", checkpoint)
             .trigger(processingTime="5 seconds")
