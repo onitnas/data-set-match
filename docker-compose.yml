@@ -5,7 +5,7 @@ services:
       dockerfile: training/Dockerfile
     working_dir: /app
     volumes:
-      - ${TENNIS_DATASET_DIR:-./training/data/processed}:/app/training/data/processed:ro
+      - ./training/data/processed:/app/training/data/processed:ro
       - ./training/artifacts:/app/training/artifacts
 
   spark-streaming:
@@ -28,8 +28,8 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      elasticsearch-init:
-        condition: service_completed_successfully
+      elasticsearch:
+        condition: service_healthy
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
@@ -67,23 +67,6 @@ services:
       timeout: 10s
       retries: 18
       start_period: 60s
-
-  kibana-init:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
-    depends_on:
-      kibana:
-        condition: service_healthy
-    volumes:
-      - ./visualization/tennis-dashboard.ndjson:/tmp/tennis-dashboard.ndjson:ro
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - |
-        curl -fsS --max-time 60 -X POST 'http://kibana:5601/api/saved_objects/_import?overwrite=true' \
-          -H 'kbn-xsrf: true' --form file=@/tmp/tennis-dashboard.ndjson \
-          -o /tmp/kibana-import.json
-        cat /tmp/kibana-import.json
-        grep -Eq '"success"[[:space:]]*:[[:space:]]*true' /tmp/kibana-import.json
-    restart: "no"
 
   kafka:
     image: apache/kafka:4.4.0
@@ -131,20 +114,6 @@ services:
       - "1"
     restart: "no"
 
-  elasticsearch-init:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.5
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    volumes:
-      - ./visualization/tennis-predictions-template.json:/tmp/tennis-predictions-template.json:ro
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - |
-        curl -fsS -X PUT http://elasticsearch:9200/_index_template/tennis-predictions \
-          -H 'Content-Type: application/json' --data-binary @/tmp/tennis-predictions-template.json
-    restart: "no"
-
   logstash:
     image: docker.elastic.co/logstash/logstash:9.5.5
     environment:
@@ -171,6 +140,8 @@ services:
     depends_on:
       logstash:
         condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   kafka-data:

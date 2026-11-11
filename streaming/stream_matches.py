@@ -9,23 +9,8 @@ from pyspark.ml.functions import vector_to_array
 
 from streaming.snapshot_features import build_snapshot_features
 
-POINT_SCHEMA = StructType([
-    StructField("number_point", StringType()),
-    StructField("score", StringType())
-])
-
-GAME_SCHEMA = StructType([
-    StructField("set_number", StringType()),
-    StructField("number_game", StringType()),
-    StructField("player_served", StringType()),
-    StructField("serve_winner", StringType()),
-    StructField("score", StringType()),
-    StructField("points", ArrayType(POINT_SCHEMA))
-])
-
 
 SET_SCORE_SCHEMA = StructType([
-    StructField("score_set", StringType()),
     StructField("score_first", StringType()),
     StructField("score_second", StringType())
 ])
@@ -40,15 +25,14 @@ MATCH_SCHEMA = StructType([
     StructField("event_second_player", StringType()),
     StructField("tournament_key", StringType()),
     StructField("tournament_name", StringType()),
+    StructField("tournament_round", StringType()),
     StructField("event_status", StringType()),
-    StructField("event_type_type", StringType()),
-    StructField("event_winner", StringType()),
     StructField("event_final_result", StringType()),
     StructField("event_game_result", StringType()),
     StructField("event_serve", StringType()),
     StructField("event_qualification", StringType()),
     StructField("scores", ArrayType(SET_SCORE_SCHEMA)),
-    StructField("pointbypoint", ArrayType(GAME_SCHEMA))
+    StructField("event_winner", StringType()),
 ])
 
 EVENT_SCHEMA = StructType([
@@ -57,12 +41,11 @@ EVENT_SCHEMA = StructType([
 ])
 
 
-def write_predictions(predictions, batch_id, model_id, source_topic, elasticsearch_index):
+def write_predictions(predictions, batch_id, source_topic, elasticsearch_index):
     documents = (
         predictions.withColumn("document_id", F.concat_ws(":", F.lit(source_topic), "partition", "offset"))
         .withColumn("kafka_topic", F.lit(source_topic))
         .withColumn("batch_id", F.lit(batch_id).cast("long"))
-        .withColumn("model_id", F.lit(model_id))
     )
     (
         documents.write.format("es")
@@ -104,7 +87,8 @@ if __name__ == "__main__":
         players = (
             spark.read
             .option("multiLine", True)
-            .json("/app/training/data/players/*.json")
+            .option("pathGlobFilter", "*.json")
+            .json("/app/training/data/players")
         )
 
         rankings = (
@@ -158,6 +142,10 @@ if __name__ == "__main__":
         )
 
         def process_batch(batch, batch_id):
+            
+            finished_matches = batch.filter(
+                F.col("data.match.event_status") == "Finished",
+            )
 
             valid = batch.filter(
                 F.col("parse_ok") &
@@ -183,26 +171,45 @@ if __name__ == "__main__":
             )
 
             predictions = model.transform(features)
-
-            output = predictions.select(
+            
+            output = predictions.unionByName(
+                finished_matches, allowMissingColumns=True
+            )
+            
+            probability = F.when(
+                F.col("data.match.event_status") == "Finished",
+                F.when(F.col("data.match.event_winner") == "First Player", 1.0)
+                .when(F.col("data.match.event_winner") == "Second Player", 0.0)
+            ).otherwise(
+                vector_to_array("probability")[1]
+            )
+            output = output.select(
                 "timestamp",
+                F.date_format(
+                    F.col("timestamp"),
+                    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+                ).alias("iso_timestamp"),
                 "match_id",
+                F.col("data.match.tournament_name").alias("tournament_name"),
+                F.col("data.match.tournament_round").alias("tournament_round"),
+                F.col("data.match.event_status").alias("status"),
                 "player_a_is_serving",
                 F.col("data.match.event_first_player").alias("player_a"),
                 F.col("data.match.event_second_player").alias("player_b"),
-                "sets_a",
-                "sets_b",
-                "games_a",
-                "games_b",
-                "is_tiebreak",
-                "tiebreak_target",
-                "tiebreak_score_a",
-                "tiebreak_score_b",
+                F.col("sets_a").cast("int").alias("sets_a"),
+                F.col("sets_b").cast("int").alias("sets_b"),
+                F.col("games_a").cast("int").alias("games_a"),
+                F.col("games_b").cast("int").alias("games_b"),
+                F.trim(F.split(F.col("data.match.event_game_result"), "-").getItem(0)).alias("score_a"),
+                F.trim(F.split(F.col("data.match.event_game_result"), "-").getItem(1)).alias("score_b"),
+                F.col("is_tiebreak").cast("int").alias("is_tiebreak"),
+                F.col("tiebreak_target").cast("int").alias("tiebreak_target"),
+                F.col("tiebreak_score_a").cast("int").alias("tiebreak_score_a"),
+                F.col("tiebreak_score_b").cast("int").alias("tiebreak_score_b"),
                 "partition",
                 "offset",
-                vector_to_array("probability")[1].alias("player_a_win_probability"),
-                (1 - vector_to_array("probability")[1]).alias("player_b_win_probability"),
-                "api_score"
+                probability.alias("player_a_win_probability"),
+                (1.0 - probability).alias("player_b_win_probability")
             )
 
             print(f"Batch {batch_id}", flush=True)
@@ -210,7 +217,6 @@ if __name__ == "__main__":
             write_predictions(
                 predictions=output,
                 batch_id=batch_id,
-                model_id=model.uid,
                 source_topic=topic,
                 elasticsearch_index=elasticsearch_index,
             )

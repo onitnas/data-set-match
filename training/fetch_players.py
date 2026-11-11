@@ -6,8 +6,6 @@ from pathlib import Path
 import requests
 
 def collect_player_ids(input_dir):
-    with open("training/config/tournaments.json", encoding="utf-8") as file:
-        tournaments = {str(tournament["tournament_key"]) for tournament in json.load(file)}
     player_ids = set()
     for year in [2024, 2025, 2026]:
         for path in sorted((input_dir / str(year)).glob("*.json")):

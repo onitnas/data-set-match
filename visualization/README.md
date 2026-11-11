@@ -6,10 +6,12 @@ documenti per mostrarli. La dashboard non esegue addestramento o inferenza.
 
 ## Configurazione
 
-`tennis-predictions-template.json` definisce mapping e impostazioni dei nuovi
-indici: uno shard primario, zero repliche, probabilità `double`, nomi e ID
-`keyword`, conteggi `integer` e `timestamp` di tipo `date`.
-`elasticsearch-init` installa il template tramite la REST API e termina.
+Non viene installato un template per `tennis-predictions`: Elasticsearch
+assegna automaticamente i tipi ai nuovi campi quando riceve i documenti.
+Spark aspetta che Elasticsearch superi il controllo di salute prima di partire.
+Gli indici e i template eventualmente già presenti conservano la propria
+configurazione. Controllare il mapping effettivo prima di configurare le
+viste e i grafici Kibana, in particolare il tipo di `timestamp`.
 
 Kibana usa la stessa versione di Elasticsearch, `9.5.5`, e lo raggiunge
 su `http://elasticsearch:9200` nella rete Compose. Le porte pubblicate sono
@@ -56,7 +58,7 @@ docker compose logs -f --tail 30 spark-streaming
 
 Il comando avvia anche Logstash, Kafka, Elasticsearch e Kibana tramite le
 dipendenze Compose. `spark-ml` è il training offline e non serve in questo avvio.
-`kafka-init`, `elasticsearch-init` e `kibana-init` devono terminare con codice 0;
+`kafka-init` e `kibana-init` devono terminare con codice 0;
 gli altri servizi restano attivi. Per la sola visualizzazione dei dati già
 salvati basta `docker compose up -d kibana-init`.
 

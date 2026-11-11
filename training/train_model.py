@@ -8,13 +8,37 @@ from pyspark.ml.classification import GBTClassifier
 from pyspark.ml.feature import OneHotEncoder, StringIndexer, VectorAssembler
 from pyspark.sql import SparkSession, functions as F
 
-from training.evaluate_model import evaluate_predictions
-
+from training.prepare_dataset import PLAYER_ORIENTATION
+from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
+from pyspark.ml.functions import vector_to_array
+import math
 
 DATA_DIR = Path("training/data/processed")
 MODEL_DIR = Path("training/artifacts/model")
 SEED = 42
 
+def evaluate_predictions(predictions):
+    evaluator = MulticlassClassificationEvaluator(labelCol="label", weightCol="sample_weight")
+    probability = vector_to_array(F.col("probability"))[1]
+
+    brier_score = predictions.select(
+        (F.sum(F.col("sample_weight") * F.pow(probability - F.col("label"), 2))
+         / F.sum("sample_weight")).alias("brier_score")
+    ).first()["brier_score"]
+
+    metrics = {
+        "accuracy": evaluator.setMetricName("accuracy").evaluate(predictions),
+        "log_loss": evaluator.setMetricName("logLoss").evaluate(predictions),
+        "brier_score": brier_score,
+        "roc_auc": BinaryClassificationEvaluator(
+            labelCol="label", rawPredictionCol="probability", weightCol="sample_weight",
+            metricName="areaUnderROC"
+        ).evaluate(predictions)
+    }
+
+    if not all(math.isfinite(value) for value in metrics.values()):
+        raise ValueError("Metriche non valide: controllare dati e probabilità")
+    return metrics
 
 if __name__ == "__main__":
     if MODEL_DIR.exists():
@@ -76,7 +100,21 @@ if __name__ == "__main__":
 
         print(f"Riaddestramento su 2024 + 2025 con parametri {best_name}...")
         model = best_pipeline.fit(training.unionByName(validation))
+        
+        test = (
+            spark.read.parquet(str(DATA_DIR / "test.parquet"))
+            .withColumn("label", F.col("label").cast("double"))
+        )
 
+        test_predictions = model.transform(test).select(
+            "label", "prediction", "probability", "sample_weight"
+        ).cache()
+
+        test_metrics = evaluate_predictions(test_predictions)
+        print(f"Metriche sul test set 2026: {test_metrics}")
+
+        test_predictions.unpersist()
+        
         print("Salvataggio del modello...")
         MODEL_DIR.mkdir(parents=True)
         model.write().save(str((MODEL_DIR / "pipeline").resolve()))
