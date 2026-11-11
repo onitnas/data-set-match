@@ -1,8 +1,9 @@
 FROM python:3.13-slim
 WORKDIR /app
 
-COPY training/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir "pyspark[ml]==4.2.0"
+COPY training/requirements.txt ./training/requirements.txt
+
+RUN pip install --no-cache-dir -r ./training/requirements.txt
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends default-jre-headless \

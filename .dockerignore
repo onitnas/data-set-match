@@ -1,9 +1,7 @@
 .git
 .venv
 .env
-.agents
-.codex
-.aws
 **/__pycache__
 training/data
 training/artifacts
+ingestion/data

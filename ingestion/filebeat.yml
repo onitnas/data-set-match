@@ -8,14 +8,12 @@ filebeat.inputs:
       max_attempts: 5
       wait_min: 1s
       wait_max: 30s
-    redact:
-      fields: []
-    # Un messaggio può contenere un singolo match oppure un array di match.
-    # Ogni match diventa un evento distinto, mantenendo il payload originale.
     program: |
       bytes(state.response).decode_json().as(body, {
         "events": (type(body) == list ? body : [body]).map(match, {
-          "match": match
+          "match": match.with({
+            "event_key": string(int(match.event_key))
+          })
         })
       })
 

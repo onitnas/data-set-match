@@ -1,2 +1,3 @@
 pyarrow==26.0.0
 requests
+pyspark[ml]==4.2.0
