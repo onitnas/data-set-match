@@ -1,0 +1,7 @@
+.git
+.venv
+.env
+**/__pycache__
+training/data
+training/artifacts
+ingestion/data

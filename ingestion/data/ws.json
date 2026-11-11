@@ -1,0 +1,102 @@
+{
+  "uuid": "8d803fb9-2bbf-420e-9104-8d7c06b4cd4d",
+  "lastMigration": 33,
+  "name": "Demo API (copy)",
+  "endpointPrefix": "",
+  "latency": 0,
+  "port": 3000,
+  "hostname": "",
+  "folders": [],
+  "routes": [
+    {
+      "uuid": "e1a0947b-0493-40e8-bc8d-664b7befeb97",
+      "type": "ws",
+      "documentation": "",
+      "method": "get",
+      "endpoint": "tennis/live",
+      "responses": [
+        {
+          "uuid": "465b2296-9393-4563-a91a-3a50177a049e",
+          "body": "{\n  \"success\": 1,\n  \"result\": [],\n  \"test\": \"WebSocket funzionante\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "",
+          "headers": [],
+          "bodyType": "FILE",
+          "filePath": "./ingestion/data/ws/{{#if (lt (dataRaw 'replayState' 'index') 724)}}{{data 'replayState' 'index'}}{{setData 'inc' 'replayState' 'index' 1}}{{else}}724{{/if}}.json",
+          "databucketID": "",
+          "sendFileAsBody": true,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": "DISABLE_RULES",
+      "streamingMode": "BROADCAST",
+      "streamingInterval": 5000
+    }
+  ],
+  "rootChildren": [
+    {
+      "type": "route",
+      "uuid": "e1a0947b-0493-40e8-bc8d-664b7befeb97"
+    }
+  ],
+  "proxyMode": false,
+  "proxyHost": "",
+  "proxyRemovePrefix": false,
+  "tlsOptions": {
+    "enabled": false,
+    "type": "CERT",
+    "pfxPath": "",
+    "certPath": "",
+    "keyPath": "",
+    "caPath": "",
+    "passphrase": ""
+  },
+  "cors": true,
+  "headers": [
+    {
+      "key": "Content-Type",
+      "value": "application/json"
+    },
+    {
+      "key": "Access-Control-Allow-Origin",
+      "value": "*"
+    },
+    {
+      "key": "Access-Control-Allow-Methods",
+      "value": "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS"
+    },
+    {
+      "key": "Access-Control-Allow-Headers",
+      "value": "Content-Type, Origin, Accept, Authorization, Content-Length, X-Requested-With"
+    }
+  ],
+  "proxyReqHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
+  "proxyResHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
+  "data": [
+    {
+      "uuid": "1543313b-7997-4a22-a10c-f14f91a4b92c",
+      "id": "9i2l",
+      "name": "replayState",
+      "documentation": "",
+      "value": "{\"index\": 0}"
+    }
+  ],
+  "callbacks": []
+}
