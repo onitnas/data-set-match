@@ -15,7 +15,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-tennis-points}
-      SPARK_CHECKPOINT_LOCATION: /app/checkpoints/kafka-reader
+      SPARK_CHECKPOINT_LOCATION: /app/checkpoints/predictions-es
       ELASTICSEARCH_NODES: elasticsearch
       ELASTICSEARCH_PORT: "9200"
       ELASTICSEARCH_INDEX: tennis-predictions

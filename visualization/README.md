@@ -25,23 +25,22 @@ esecuzione sovrascrive gli stessi oggetti con la versione nel repository;
 gli eventi Elasticsearch e gli altri oggetti Kibana rimangono invariati.
 
 La sessione Spark configura `es.nodes`, `es.port` e `es.nodes.wan.only`.
-Dentro `foreachBatch`, dopo la preparazione delle feature e l'inferenza,
-`write_predictions()` applica al DataFrame:
+Dopo l'inferenza, Spark scrive le previsioni con il sink streaming Elasticsearch.
 
 ```python
-documents.write.format("es") \
+output.writeStream.format("es") \
     .option("es.mapping.id", "document_id") \
     .option("es.spark.dataframe.write.null", "true") \
-    .mode("append") \
-    .save(elasticsearch_index)
+    .outputMode("append") \
+    .option("checkpointLocation", checkpoint) \
+    .trigger(processingTime="5 seconds") \
+    .start(elasticsearch_index)
 ```
 
 ## Documenti e recupero
 
-Il batch termina dopo la scrittura Elasticsearch. Se fallisce, Spark non
-conferma gli offset di ingresso; al riavvio recupera l'output dalla cache e
-ritenta la scrittura con gli stessi ID. Il checkpoint esistente è mantenuto.
-Il modello non viene riaddestrato e non si rilegge automaticamente tutto Kafka.
+Spark registra nel checkpoint i micro-batch completati. Al riavvio, gli eventi
+da rielaborare vengono scritti con gli stessi ID basati su topic, partizione e offset.
 
 ## Avvio e verifica
 

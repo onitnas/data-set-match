@@ -188,8 +188,7 @@ dai quali ricava i ranking per stagione.
    e timestamp. Interpreta il JSON con uno schema esplicito e aggiunge
    `parse_ok` per indicare se il parsing è riuscito e l’ID è presente.
 
-2. `foreachBatch` passa il micro-batch a `process_batch()`, che separa gli
-   incontri con stato `Finished` dagli aggiornamenti in corso. Per questi
+2. Spark separa gli incontri con stato `Finished` dagli aggiornamenti in corso. Per questi
    ultimi mantiene gli eventi con parsing valido, stato da `Set 1` a
    `Set 5`.
 
@@ -209,27 +208,32 @@ dai quali ricava i ranking per stagione.
 6. Le previsioni vengono unite agli eventi `Finished`. Per gli incontri
    conclusi le probabilità vengono impostate a 1 per il vincitore e 0
    per lo sconfitto, usando `event_winner`, senza eseguire il modello
-   su questi eventi.
+   su questi eventi. Il documento finale conserva i set vinti e i game
+   dell’ultimo set riportati dal feed. Se il game è terminato e il feed
+   indica `-`, i campi dei punti correnti sono nulli.
 
 7. Una `select` prepara l’output con giocatori, torneo, stato, punteggio,
    probabilità, timestamp, partizione e offset. I campi del punteggio
    destinati alla visualizzazione vengono mantenuti separati dalla
    codifica usata dal modello.
 
-8. `write_predictions()` aggiunge `document_id`, `kafka_topic` e
-   `batch_id`, quindi scrive su Elasticsearch tramite
-   `.write.format("es")`. L’ID del documento è composto da
+8. Il DataFrame di output include `document_id` e `kafka_topic` e viene
+   scritto su Elasticsearch tramite `.writeStream.format("es")`. L’ID del documento è composto da
    topic, partizione e offset.
 
-9. Quando `process_batch()` termina correttamente, Spark registra il
+9. Dopo la scrittura su Elasticsearch, Spark registra il
    completamento del micro-batch nel checkpoint persistente.
    Il trigger è configurato con un intervallo di 5 secondi.
 
 Spark Structured Streaming salva gli offset Kafka e l’avanzamento
-dei micro-batch nel checkpoint `/app/checkpoints/kafka-reader`,
+dei micro-batch nel checkpoint `/app/checkpoints/predictions-es`,
 conservato nel volume Docker `streaming-checkpoints`. In caso di interruzione,
 usa queste informazioni per riprendere l’elaborazione, purché i messaggi
 necessari siano ancora disponibili in Kafka.
+
+La migrazione usa una nuova directory perché Spark registra gli offset dei due
+rami (live e `Finished`) separatamente. Al primo avvio rilegge gli eventi
+ancora disponibili in Kafka e riscrive i documenti con gli stessi ID.
 
 ## Scrittura su Elasticsearch
 
@@ -243,7 +247,7 @@ persistente e porta pubblicata su `127.0.0.1:9200`.
 Vengono salvati gli aggiornamenti in corso che superano i filtri e contengono 
 tutte le feature richieste, oltre agli eventi con stato Finished. 
 Ogni riga di output diventa un documento Elasticsearch contenente topic, 
-partizione e offset dell’evento Kafka originale e ID del batch.
+partizione e offset dell’evento Kafka originale.
 
 L’ID document_id=topic:partizione:offset permette al connettore di sovrascrivere 
 lo stesso documento se un batch viene rieseguito. I campi null vengono conservati.

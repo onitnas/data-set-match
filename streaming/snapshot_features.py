@@ -10,13 +10,21 @@ def score_number(column, index):
     return F.trim(value).try_cast("double")
 
 
+def with_snapshot_score(df):
+    match = F.col("data.match")
+    scores = match["scores"]
+    last_set = F.get(scores, F.size(scores) - 1)
+    return (
+        df.withColumn("sets_a", score_number(match["event_final_result"], 0))
+        .withColumn("sets_b", score_number(match["event_final_result"], 1))
+        .withColumn("games_a", last_set["score_first"].try_cast("double"))
+        .withColumn("games_b", last_set["score_second"].try_cast("double"))
+    )
+
+
 def build_snapshot_features(df, tournaments, rankings):
 
     match = F.col("data.match")
-
-    # Ultimo set presente nell'array scores
-    scores = match["scores"]
-    current_score = F.get(scores, F.size(scores) - 1)
 
     # Punteggio del game corrente
     points = F.split(match["event_game_result"], "-")
@@ -30,7 +38,7 @@ def build_snapshot_features(df, tournaments, rankings):
     )
 
     result = (
-        df
+        with_snapshot_score(df)
         .withColumn(
             "best_of",
             F.when(
@@ -41,31 +49,12 @@ def build_snapshot_features(df, tournaments, rankings):
             ).otherwise(3.0)
         )
         .withColumn(
-            "sets_a",
-            score_number(match["event_final_result"], 0)
-        )
-        .withColumn(
-            "sets_b",
-            score_number(match["event_final_result"], 1)
-        )
-        .withColumn(
             "player_a_is_serving",
             F.when(match["event_serve"] == "First Player", 1.0)
              .when(match["event_serve"] == "Second Player", 0.0)
         )
     )
 
-    result = (
-        result
-        .withColumn(
-            "games_a",
-            current_score["score_first"].try_cast("double")
-        )
-        .withColumn(
-            "games_b",
-            current_score["score_second"].try_cast("double")
-        )
-    )
     result = result.withColumn(
         "is_tiebreak",
         F.when(
