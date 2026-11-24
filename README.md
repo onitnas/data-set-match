@@ -17,8 +17,10 @@ flowchart TD
     A[Feed live - WebSocket] --> C[Ingestion - Filebeat] --> L[Ingestion e filter - Logstash]
     L --> K[(Apache Kafka)]
     K --> S[Spark Structured Streaming]
+    K --> LS[Logstash - tabellone]
+    LS -->|tennis-scores| E
     M --> S
-    S --> E[(Elasticsearch)]
+    S -->|tennis-predictions| E[(Elasticsearch)]
     E --> B[Kibana - Dashboard]
 ```
 ## Mockoon o simili
@@ -161,6 +163,15 @@ Logstash usa `match_id` come chiave Kafka e una sola pipeline worker, con elabor
 ## Kafka
 
 `kafka` conserva gli eventi nel topic `tennis-points`, configurato con una sola partizione.
+
+Nello stesso container Logstash, la seconda pipeline legge il topic con il gruppo
+predefinito `logstash`. In assenza di offset salvati parte dal primo disponibile. Ai riavvii
+riprende dagli offset del gruppo e consegna gli eventi già accodati su disco.
+Scrive nell’indice `tennis-scores` un documento per `match_id` con punteggio,
+giocatori, foto e stato. Elasticsearch usa l’offset Kafka come versione del documento
+e scarta gli aggiornamenti con un offset inferiore nella stessa partizione.
+Il campo `document_id` identifica lo snapshot (`topic:partizione:offset`) e
+corrisponde all’ID della previsione Spark, quando disponibile.
 
 Su `kafka` possiamo controllare che i messaggi da `logstash` arrivino correttamente, da terminale
 lanciamo il comando:

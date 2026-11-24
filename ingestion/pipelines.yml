@@ -1,0 +1,8 @@
+- pipeline.id: main
+  path.config: /usr/share/logstash/pipeline/logstash.conf
+
+- pipeline.id: tennis-scores
+  path.config: /usr/share/logstash/pipeline/scores.conf
+  queue.type: persisted
+  queue.max_bytes: 64mb
+  queue.checkpoint.writes: 1
