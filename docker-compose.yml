@@ -15,7 +15,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-tennis-points}
-      SPARK_CHECKPOINT_LOCATION: /app/checkpoints/kafka-reader
+      SPARK_CHECKPOINT_LOCATION: /app/checkpoints/predictions-es
       ELASTICSEARCH_NODES: elasticsearch
       ELASTICSEARCH_PORT: "9200"
       ELASTICSEARCH_INDEX: tennis-predictions
@@ -125,9 +125,13 @@ services:
       LS_JAVA_OPTS: -Xms256m -Xmx512m
     volumes:
       - ./ingestion/pipeline:/usr/share/logstash/pipeline:ro
+      - ./ingestion/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - logstash-data:/usr/share/logstash/data
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      elasticsearch:
+        condition: service_started
 
   filebeat:
     image: docker.elastic.co/beats/filebeat:9.5.5
@@ -144,6 +148,7 @@ services:
       - "host.docker.internal:host-gateway"
 
 volumes:
+  logstash-data:
   kafka-data:
   filebeat-data:
   streaming-checkpoints:
