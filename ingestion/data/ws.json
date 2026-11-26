@@ -23,7 +23,7 @@
           "label": "",
           "headers": [],
           "bodyType": "FILE",
-          "filePath": "./ingestion/data/ws/{{#if (lt (dataRaw 'replayState' 'index') 724)}}{{data 'replayState' 'index'}}{{setData 'inc' 'replayState' 'index' 1}}{{else}}724{{/if}}.json",
+          "filePath": "./ws/{{#if (lt (dataRaw 'replayState' 'index') 724)}}{{data 'replayState' 'index'}}{{setData 'inc' 'replayState' 'index' 1}}{{else}}724{{/if}}.json",
           "databucketID": "",
           "sendFileAsBody": true,
           "rules": [],

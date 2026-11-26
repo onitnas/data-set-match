@@ -4,6 +4,37 @@ Spark carica il modello già addestrato e calcola le probabilità di vittoria
 del match. Elasticsearch conserva ogni aggiornamento; Kibana interroga quei
 documenti per mostrarli. La dashboard non esegue addestramento o inferenza.
 
+## Tabellone tennis in Canvas
+
+Apri [Tabellone tennis](http://localhost:5601/app/canvas#/workpad/workpad-tabellone-tennis/page/1)
+e seleziona una coppia di giocatori nella colonna **Incontri**. All’apertura viene
+proposto il match con l’offset più recente. Il link di ciascun incontro conserva
+la selezione anche dopo un aggiornamento della pagina.
+
+Il tabellone legge foto, servizio, punti e risultati dei set da `tennis-scores`.
+Il grafico mostra fino a 100 snapshot di `tennis-predictions` per l’incontro,
+in ordine di offset. Le due curve rappresentano i due giocatori. Quando la
+previsione si riferisce a uno snapshot precedente, il pannello mostra il
+punteggio di quella previsione. A partita conclusa compare il vincitore.
+
+### Avviare la diretta di prova
+
+1. Con `TENNIS_WEBSOCKET_URL=ws://host.docker.internal:3000/tennis/live`
+   nel file `.env`, avvia i servizi dalla radice del progetto:
+   `docker compose up -d filebeat spark-streaming kibana`.
+2. In Mockoon apri [ws.json](../ingestion/data/ws.json) e premi **Start server**.
+   L’ambiente legge un frame dalla cartella `ws/` ogni 5 secondi. Alcuni frame
+   consecutivi riportano lo stesso punteggio. Raggiunto il frame 724, il replay
+   continua a mostrare il risultato finale.
+3. Nel workpad apri **View → Auto refresh settings** e scegli **5 seconds**.
+   Per verificare il flusso guarda anche **Aggiornato alle**, che indica l’ora
+   del messaggio Kafka mostrato.
+
+Per installarlo su un altro Kibana 9.5.5, apri **Stack Management → Saved Objects
+→ Import** e scegli [tabellone-tennis.ndjson](tabellone-tennis.ndjson). Il file
+include il workpad e la visualizzazione Vega incorporata. I dati restano nei
+due indici Elasticsearch del progetto.
+
 ## Configurazione
 
 Non viene installato un template per `tennis-predictions`: Elasticsearch
@@ -18,11 +49,12 @@ su `http://elasticsearch:9200` nella rete Compose. Le porte pubblicate sono
 `127.0.0.1:9200` e `127.0.0.1:5601`; l'ambiente locale ha autenticazione
 disattivata. Dashboard e viste dati sono conservate nel volume Elasticsearch.
 
-`tennis-dashboard.ndjson` è un'esportazione nativa di Kibana 9.5.5 contenente
-la dashboard `tennis-live` e la vista dati `tennis-predictions-view`.
-`kibana-init` aspetta Kibana, importa questi oggetti e termina. A ogni sua
-esecuzione sovrascrive gli stessi oggetti con la versione nel repository;
-gli eventi Elasticsearch e gli altri oggetti Kibana rimangono invariati.
+Su un volume nuovo apri **Stack Management → Saved Objects → Import** e scegli
+[general_dashboard.ndjson](general_dashboard.ndjson). L’export include **General Dashboard**
+e la data view **Data Set Match Prediction**, associata a `tennis-predictions` con
+campo temporale `iso_timestamp`. Il tabellone Canvas ha un export separato.
+Per conservare gli oggetti usa `docker compose down` e riavvia lo stesso progetto.
+L’opzione `-v` elimina anche il volume Elasticsearch.
 
 La sessione Spark configura `es.nodes`, `es.port` e `es.nodes.wan.only`.
 Dopo l'inferenza, Spark scrive le previsioni con il sink streaming Elasticsearch.
@@ -49,17 +81,16 @@ Dalla radice, con modello e storico giocatori già disponibili in
 
 ```bash
 docker compose config -q
-docker compose up --build -d filebeat spark-streaming kibana-init
+docker compose up --build -d filebeat spark-streaming kibana
 docker compose ps -a
-docker compose logs kibana-init
 docker compose logs -f --tail 30 spark-streaming
 ```
 
 Il comando avvia anche Logstash, Kafka, Elasticsearch e Kibana tramite le
 dipendenze Compose. `spark-ml` è il training offline e non serve in questo avvio.
-`kafka-init` e `kibana-init` devono terminare con codice 0;
+`kafka-init` deve terminare con codice 0;
 gli altri servizi restano attivi. Per la sola visualizzazione dei dati già
-salvati basta `docker compose up -d kibana-init`.
+salvati basta `docker compose up -d kibana`.
 
 Spark deve mostrare `previsioni salvate in tennis-predictions` quando riceve
 eventi. Elasticsearch è accessibile su `http://localhost:9200`:
@@ -71,57 +102,24 @@ curl -s 'http://localhost:9200/tennis-predictions/_search?size=3&sort=timestamp:
 curl -s 'http://localhost:5601/api/status'
 ```
 
-Aprire la dashboard:
-
-**http://localhost:5601/app/dashboards#/view/tennis-live**
-
-## Come leggere la dashboard
-
-L'intervallo iniziale è **Last 7 days**, con aggiornamento automatico ogni
-30 secondi. Può essere cambiato dal selettore temporale in alto. Un intervallo
-senza eventi produce pannelli vuoti: non significa che i servizi siano fermi.
-
-- **Aggiornamenti ricevuti:** numero di documenti nell'intervallo selezionato,
-  non numero di punti né di chiamate al modello.
-- **Incontri osservati:** numero di `match_id` distinti nello stesso intervallo.
-- **Match ID:** selezionare un incontro per filtrare tutte le viste.
-  La tabella permette di associare l'ID ai nomi dei giocatori.
-- **Ultimo aggiornamento per incontro:** una riga per match, con punteggio,
-  probabilità, vincitore previsto e stato dell'elaborazione. Mostra fino a
-  100 incontri; "ultimo" si riferisce ai dati disponibili nell'intervallo,
-  non certifica che la partita sia ancora in corso.
-- **Andamento delle probabilità:** due serie, vittoria di A e vittoria di B,
-  per ciascun incontro. Selezionare un match per leggere il suo andamento.
-  Il grafico usa gli stati con probabilità disponibili, senza mediare tra
-  incontri, e visualizza fino a 5.000 aggiornamenti (due valori per evento).
-  La legenda indica A/B, nome del giocatore e ID del match. Ridurre l'intervallo
-  per esplorare periodi più densi.
-- **Ultimi 200 aggiornamenti:** registro degli eventi più recenti, con stato,
-  motivo di esclusione, partizione e offset Kafka.
-
-A è il primo giocatore dell'API e B il secondo. Le percentuali riguardano
-la vittoria finale del **match**, non del prossimo punto. `predicted` indica
-un nuovo input al modello; `unchanged` una previsione riutilizzata. Un evento
-senza previsione mantiene probabilità nulle anche nella tabella dell'ultimo
-aggiornamento: non eredita quelle di un evento precedente.
+Apri [General Dashboard](http://localhost:5601/app/dashboards#/view/133faf11-21c3-4265-be0a-a0008b16cfa8)
+e scegli un intervallo temporale che includa le previsioni salvate.
 
 ## Modificare e salvare la dashboard
 
-Usare **Edit** in Kibana per modificare pannelli e layout. Per conservare
+Dopo aver modificato pannelli e layout in Kibana, premi **Save**. Per conservare
 le modifiche nel repository, riesportare la dashboard con le sue dipendenze:
 
 ```bash
 curl -fsS -X POST 'http://localhost:5601/api/saved_objects/_export' \
   -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
-  --data '{"objects":[{"type":"dashboard","id":"tennis-live"}],"includeReferencesDeep":true,"excludeExportDetails":true}' \
-  -o visualization/tennis-dashboard.ndjson
+  --data '{"objects":[{"type":"dashboard","id":"133faf11-21c3-4265-be0a-a0008b16cfa8"}],"includeReferencesDeep":true}' \
+  -o visualization/general_dashboard.ndjson
 ```
 
-Esportare prima di rieseguire `kibana-init`, altrimenti viene reimportata la
-versione precedente del repository. Il file contiene configurazione e query,
-non le partite o le previsioni. Per importarlo manualmente:
+Per ripristinare la dashboard e la vista su un’installazione vuota:
 
 ```bash
-curl -fsS -X POST 'http://localhost:5601/api/saved_objects/_import?overwrite=true' \
-  -H 'kbn-xsrf: true' --form file=@visualization/tennis-dashboard.ndjson
+curl -fsS -X POST 'http://localhost:5601/api/saved_objects/_import' \
+  -H 'kbn-xsrf: true' --form file=@visualization/general_dashboard.ndjson
 ```

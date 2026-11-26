@@ -56,6 +56,7 @@ services:
       SERVER_NAME: kibana
       ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
       TELEMETRY_ENABLED: "false"
+      VIS_TYPE_VEGA_ENABLEEXTERNALURLS: "true"
     ports:
       - "127.0.0.1:5601:5601"
     depends_on:

@@ -23,6 +23,7 @@ flowchart TD
     S -->|tennis-predictions| E[(Elasticsearch)]
     E --> B[Kibana - Dashboard]
 ```
+
 ## Mockoon o simili
 
 Per testare la demo quando non ci sono match `Masters 1000` e `Grand Slam` è possibile usare [Mockoon](https://github.com/mockoon/mockoon).
@@ -51,7 +52,7 @@ Il dataset di training è costruito per **singolo punto**.
 Esempio di una riga di dataset:
 
 | Nome | Valore | Breve descrizione |
-|---|---|---|
+| --- | --- | --- |
 | match_id | 12106804 | Identificativo dell’incontro. |
 | match_date | 2026-03-05 | Data dell’incontro. |
 | player_a_id | 13091 | Identificativo del giocatore A. |
@@ -85,19 +86,19 @@ Esempio di una riga di dataset:
 .venv/bin/python -m pip install -r training/requirements.txt
 ```
 
-2. `fetch_matches` scarica i match, nella nostra demo stiamo considerando solo match di Grand Slam e Masters 1000 relativi agli anni 2024, 2025, 2026.
+1. `fetch_matches` scarica i match, nella nostra demo stiamo considerando solo match di Grand Slam e Masters 1000 relativi agli anni 2024, 2025, 2026.
 
 ```bash
 .venv/bin/python -m training.fetch_matches
 ```
 
-3. `fetch_players` scarica i dati relativi ai giocatori presenti nei match trovati.
+1. `fetch_players` scarica i dati relativi ai giocatori presenti nei match trovati.
 
 ```bash
 .venv/bin/python -m training.fetch_players
 ```
 
-4. `prepare_dataset` crea i file parquet per l'addestramento del modello, li divide in `train.parquet`, `validation.parquet` e `test.parquet`.
+1. `prepare_dataset` crea i file parquet per l'addestramento del modello, li divide in `train.parquet`, `validation.parquet` e `test.parquet`.
 
 ```bash
 .venv/bin/python -m training.prepare_dataset
@@ -154,7 +155,7 @@ selezionata quella di `API-tennis` di default, infine manda il contenuto JSON in
 3. `logstash` prende in input il JSON da `filebeat`, usa `filter` per filtrare i match che non sono
 `ATP Single` e che non rientrano in Masters 1000 e Grand Slam.
 
-Il programma `program` in `filebeat.yml` usa CEL: decodifica ogni messaggio JSON, trasforma un oggetto 
+Il programma `program` in `filebeat.yml` usa CEL: decodifica ogni messaggio JSON, trasforma un oggetto
 singolo in una lista di un elemento e pubblica un evento per ogni match nel campo `match`.
 
 Filebeat aggiunge `@timestamp` rappresenta l'istante di acquisizione, non l'orario del punto.
@@ -164,8 +165,7 @@ Logstash usa `match_id` come chiave Kafka e una sola pipeline worker, con elabor
 
 `kafka` conserva gli eventi nel topic `tennis-points`, configurato con una sola partizione.
 
-Nello stesso container Logstash, la seconda pipeline legge il topic con il gruppo
-predefinito `logstash`. In assenza di offset salvati parte dal primo disponibile. Ai riavvii
+Nello stesso container Logstash, la seconda pipeline legge il topic, ai riavvii
 riprende dagli offset del gruppo e consegna gli eventi già accodati su disco.
 Scrive nell’indice `tennis-scores` un documento per `match_id` con punteggio,
 giocatori, foto e stato. Elasticsearch usa l’offset Kafka come versione del documento
@@ -255,15 +255,15 @@ con `--jars`.
 Compose avvia Elasticsearch come cluster di un solo nodo (`es01`), con volume
 persistente e porta pubblicata su `127.0.0.1:9200`.
 
-Vengono salvati gli aggiornamenti in corso che superano i filtri e contengono 
-tutte le feature richieste, oltre agli eventi con stato Finished. 
-Ogni riga di output diventa un documento Elasticsearch contenente topic, 
+Vengono salvati gli aggiornamenti in corso che superano i filtri e contengono
+tutte le feature richieste, oltre agli eventi con stato Finished.
+Ogni riga di output diventa un documento Elasticsearch contenente topic,
 partizione e offset dell’evento Kafka originale.
 
-L’ID document_id=topic:partizione:offset permette al connettore di sovrascrivere 
+L’ID document_id=topic:partizione:offset permette al connettore di sovrascrivere
 lo stesso documento se un batch viene rieseguito. I campi null vengono conservati.
 
-Due aggiornamenti identici ricevuti con offset Kafka diversi producono documenti distinti: 
+Due aggiornamenti identici ricevuti con offset Kafka diversi producono documenti distinti:
 l’ID protegge dalla ripetizione della scrittura, ma non elimina gli snapshot ripetuti dalla sorgente.
 
 Per controllare lo stato del cluser, contare i documenti presenti nell'indice e visualizzarne i primi tre:
@@ -280,10 +280,9 @@ curl -s 'http://localhost:9200/tennis-predictions/_search?size=3&sort=timestamp:
 le previsioni salvate su Elasticsearch attraverso una dashboard. Nella directory `visualization` c'è un export della
 dashboard creata.
 
-La directory `visualization` contiene l’export `general_dashboard.njson`,
-da importare manualmente in Kibana. Nell’ambiente di destinazione deve
-essere disponibile anche la vista dati utilizzata dalla dashboard,
-collegata all’indice `tennis-predictions`.
+Su un’installazione nuova, importa [general_dashboard.ndjson](visualization/general_dashboard.ndjson)
+per caricare insieme la dashboard e la sua data view, e [tabellone-tennis.ndjson](visualization/tabellone-tennis.ndjson)
+per il tabellone Canvas. Kibana li conserva nel volume `elasticsearch-data` tra un avvio e l’altro.
 
 ## Licenza
 
